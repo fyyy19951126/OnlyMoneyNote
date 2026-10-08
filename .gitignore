@@ -1,0 +1,24 @@
+# 构建产物 / 缓存
+.gradle/
+.kotlin/
+.trash/
+.idea/
+build/
+dist/
+
+# 个人数据：账单备份 JSON、旧库拷贝，绝不能进公开仓库
+_import/
+_screenshots/
+
+# 签名密钥与密码：只留本机，另备份到离线位置
+*.jks
+keystore.properties
+
+# Android Studio 本机配置
+local.properties
+captures/
+*.iml
+
+# 根目录调试截图 / uiautomator dump
+/*.png
+/*.xml

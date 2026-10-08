@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Only记账</string>
+
+    <string name="widget_today">今日收支</string>
+    <string name="widget_today_desc">看今天花了多少、挣了多少</string>
+    <string name="widget_month">本月结余</string>
+    <string name="widget_month_desc">本月支出、收入和结余</string>
+    <string name="widget_recent">最近账单</string>
+    <string name="widget_recent_desc">最近几笔账单列表</string>
+    <string name="widget_add">快速记一笔</string>
+    <string name="widget_add_desc">点一下直达记账页</string>
+    <string name="widget_donut">本月支出占比</string>
+    <string name="widget_donut_desc">本月支出环形图，按分类看占比</string>
+</resources>
