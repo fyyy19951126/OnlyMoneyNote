@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
 object UpdateChecker {
 
     /** 更新信息 JSON 的公网地址。换成你自己的（坚果云公开链接 / GitHub raw 都行）。 */
-    const val UPDATE_JSON_URL = "https://example.com/onlymoneynote/update.json"
+    const val UPDATE_JSON_URL = "https://cdn.jsdelivr.net/gh/fyyy19951126/OnlyMoneyNote@main/update/update.json"
 
     private const val PLACEHOLDER_HOST = "example.com"
 
