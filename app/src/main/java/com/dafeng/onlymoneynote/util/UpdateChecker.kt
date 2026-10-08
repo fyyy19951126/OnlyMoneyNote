@@ -19,9 +19,9 @@ import java.util.concurrent.TimeUnit
  * **下载链接（蓝奏云）写在 JSON 里而不是代码里**：发新版只改这个文件，
  * 不用重新编包、不用让用户装新包才能看到新链接。
  *
- * 启动时静默调用一次，只有 [Newer] 会浮到界面上（「关于」图标亮红点，
- * 点版本号看更新说明）。[UPDATE_JSON_URL] 还是占位值时 [check] 直接返回
- * [NotConfigured]，不会去请求一个假地址。
+ * **只在用户点「关于 → 版本号」时调用一次**，App 平时完全不联网。
+ * [UPDATE_JSON_URL] 还是占位值时 [check] 直接返回 [NotConfigured]，
+ * 不会去请求一个假地址。
  */
 object UpdateChecker {
 

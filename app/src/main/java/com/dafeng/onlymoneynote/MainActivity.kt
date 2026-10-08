@@ -56,8 +56,6 @@ import com.dafeng.onlymoneynote.ui.screens.ImportExportSheet
 import com.dafeng.onlymoneynote.ui.screens.ReimburseScreen
 import com.dafeng.onlymoneynote.ui.screens.StatsScreen
 import com.dafeng.onlymoneynote.ui.screens.TransactionListScreen
-import com.dafeng.onlymoneynote.ui.screens.UpdateDialog
-import com.dafeng.onlymoneynote.util.UpdateChecker
 import com.dafeng.onlymoneynote.ui.screens.WebDavScreen
 import com.dafeng.onlymoneynote.ui.theme.AppTheme
 import com.dafeng.onlymoneynote.ui.theme.OnlyMoneyNoteTheme
@@ -170,7 +168,6 @@ private fun AppRoot(
     var showIoSheet by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
-    var showUpdateDialog by remember { mutableStateOf(false) }
 
     val transactions by vm.transactions.collectAsState()
     val categories by vm.categories.collectAsState()
@@ -180,7 +177,6 @@ private fun AppRoot(
     val reimbursedTxs by vm.reimbursedTxs.collectAsState()
     val toast by vm.toast.collectAsState()
     val busy by vm.busy.collectAsState()
-    val updateResult by vm.updateResult.collectAsState()
 
     // 提示条：显示 1.8 秒自动消失。
     // 用 LaunchedEffect(toast) 做延时 —— toast 变了协程就重启，不会误清下一条。
@@ -200,10 +196,7 @@ private fun AppRoot(
         }
     }
 
-    // 开屏静默查一次更新：有新版只亮「关于」上的红点，不弹窗不打扰
-    LaunchedEffect(Unit) {
-        vm.checkUpdateSilently()
-    }
+    // 检查更新只在用户点「关于 → 版本号」时发生，App 平时完全不联网
 
     // 桌面「快速记一笔」插件：进来直接弹记账页
     LaunchedEffect(openAdd) {
@@ -307,7 +300,6 @@ private fun AppRoot(
                     onOpenBackup = { stack = stack + Overlay.BACKUP },
                     onOpenIo = { showIoSheet = true },
                     onOpenTheme = { showTheme = true },
-                    updateAvailable = updateResult is UpdateChecker.Result.Newer,
                     onOpenAbout = { showAbout = true }
                 )
             }
@@ -339,25 +331,10 @@ private fun AppRoot(
             if (showAbout) {
                 AboutDialog(
                     onDismiss = { showAbout = false },
-                    // 有新版：关于里的版本号变成可点的入口（带红字提示）
-                    newVersion = (updateResult as? UpdateChecker.Result.Newer)?.info?.versionName,
-                    onTapVersion = {
-                        showAbout = false
-                        showUpdateDialog = true
-                    }
+                    checking = busy,
+                    // 2026-10-09 用户要求：平时不联网；点这一行才查，有新版直接跳浏览器下载页
+                    onTapVersion = { vm.checkUpdateNow() }
                 )
-            }
-            if (showUpdateDialog) {
-                (updateResult as? UpdateChecker.Result.Newer)?.let { newer ->
-                    UpdateDialog(
-                        info = newer.info,
-                        current = newer.current,
-                        onDismiss = {
-                            showUpdateDialog = false
-                            vm.clearUpdateResult()
-                        }
-                    )
-                } ?: run { showUpdateDialog = false }
             }
             if (showTheme) {
                 ThemeDialog(

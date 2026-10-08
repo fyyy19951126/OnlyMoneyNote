@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
@@ -106,8 +105,6 @@ fun TransactionListScreen(
     onOpenBackup: () -> Unit,
     onOpenIo: () -> Unit,
     onOpenTheme: () -> Unit,
-    /** 有可用更新时，关于图标右上角亮红点 */
-    updateAvailable: Boolean = false,
     onOpenAbout: () -> Unit
 ) {
     var openedId by remember { mutableStateOf<Long?>(null) }
@@ -257,7 +254,8 @@ fun TransactionListScreen(
                         HeaderEntry(Icons.Outlined.Cloud, "云端备份") { onOpenBackup() }
                         HeaderEntry(Icons.Outlined.UploadFile, "导入导出") { onOpenIo() }
                         HeaderEntry(Icons.Outlined.Palette, "主题外观") { onOpenTheme() }
-                        HeaderEntry(Icons.Outlined.Info, "关于", dot = updateAvailable) { onOpenAbout() }
+                        // 2026-10-09 用户新要求：去掉红点，更新提示只保留在「关于」的版本号行
+                        HeaderEntry(Icons.Outlined.Info, "关于") { onOpenAbout() }
                     }
                 }
 
@@ -454,8 +452,6 @@ fun TransactionListScreen(
 private fun HeaderEntry(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
-    /** 右上角红点：有可用更新时在「关于」上提示 */
-    dot: Boolean = false,
     onClick: () -> Unit
 ) {
     Box(
@@ -475,16 +471,6 @@ private fun HeaderEntry(
                 icon, label,
                 modifier = Modifier.size(18.dp),
                 tint = Color.White.copy(alpha = 0.95f)
-            )
-        }
-        if (dot) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 4.dp, end = 4.dp)
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFFFA5151))
             )
         }
     }

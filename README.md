@@ -144,12 +144,12 @@ app/src/test/java/com/dafeng/moneynote/data/ocr/
 
 ## 检查更新
 
-启动时静默检查一次，**没有专门的更新按钮**：
+**App 平时完全不联网**：没有开屏检查、没有红点、没有后台请求。
+唯一入口是「关于」里的版本号行 —— 点它才会去拉一次远程 JSON：
 
 - 远程只放一个小 JSON（本仓库 `update/update.json`），格式：`{ "versionName": "1.1", "url": "蓝奏云链接", "note": "更新说明" }`
-- 地址在 `util/UpdateChecker.kt` 的 `UPDATE_JSON_URL` 常量，指向本仓库文件的 jsDelivr CDN 地址（国内可直连）。**还是 example.com 占位时直接跳过检查**，不会请求假地址。
-- 有新版时：首页右上角「关于」图标亮红点 → 进「关于」点版本号那行 → 弹更新窗（版本对比 + 说明 + 去下载）。
-- 没配地址 / 连不上 / 已是最新，全程不出声，不开屏弹 toast。
+- 地址在 `util/UpdateChecker.kt` 的 `UPDATE_JSON_URL` 常量，指向本仓库文件的 jsDelivr CDN 地址（国内可直连）。**还是 example.com 占位时直接返回「还没配置」**，不会请求假地址。
+- 有新版 → 直接跳浏览器打开 JSON 里的 url 下载页；已是最新 / 连不上 / 没配置 → toast 说明。
 - 下载链接放在 JSON 里而不是写死在代码里：发新版只改那个文件，用户不用装新包就能看到新链接。
 
 ## 发布新版本

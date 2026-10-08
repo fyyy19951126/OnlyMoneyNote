@@ -36,8 +36,8 @@ import com.dafeng.onlymoneynote.ui.theme.AppTheme
 @Composable
 fun AboutDialog(
     onDismiss: () -> Unit,
-    /** 有可用新版本时传版本号：版本号那一行变成更新入口 */
-    newVersion: String? = null,
+    /** 正在联网检查更新（点版本号触发）：行尾显示「检查中…」并挡住重复点击 */
+    checking: Boolean = false,
     onTapVersion: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -54,33 +54,24 @@ fun AboutDialog(
         title = { Text("关于", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
         text = {
             Column {
+                // 平时不联网；点了这一行才去远程查一次有没有新版
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .then(
-                            if (newVersion != null) {
-                                Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable(onClick = onTapVersion)
-                                    .background(AppTheme.primary.copy(alpha = 0.08f))
-                                    .padding(horizontal = 8.dp, vertical = 6.dp)
-                            } else {
-                                Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                            }
-                        ),
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(enabled = !checking, onClick = onTapVersion)
+                        .background(AppTheme.primary.copy(alpha = 0.06f))
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("版本号", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.weight(1f))
-                    if (newVersion != null) {
-                        Text(
-                            "有新版本 $newVersion，点我更新",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = AppTheme.danger
-                        )
-                        Spacer(Modifier.width(6.dp))
-                    }
+                    Text(
+                        if (checking) "检查中…" else "点我检查更新",
+                        fontSize = 12.sp,
+                        color = AppTheme.primary
+                    )
+                    Spacer(Modifier.width(6.dp))
                     Text(version, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 }
                 Spacer(Modifier.height(16.dp))

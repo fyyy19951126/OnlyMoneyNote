@@ -1,5 +1,6 @@
 package com.dafeng.onlymoneynote.ui
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.ViewModel
@@ -134,26 +135,30 @@ class LedgerViewModel @Inject constructor(
     private val _toast = MutableStateFlow<String?>(null)
     val toast: StateFlow<String?> = _toast.asStateFlow()
 
-    /** 检查更新的结果：只有「有新版」才进这个 state（要弹窗），其余走 toast */
-    private val _updateResult = MutableStateFlow<UpdateChecker.Result?>(null)
-    val updateResult: StateFlow<UpdateChecker.Result?> = _updateResult.asStateFlow()
-
-    fun clearUpdateResult() {
-        _updateResult.value = null
-    }
-
     /**
-     * 启动时静默检查更新：有新版就记进 updateResult（关于图标亮红点），
-     * 没配地址 / 连不上 / 已是最新都**不出声** —— 开屏弹 toast 很烦。
+     * 点「关于」里的版本号才触发：拉一次 update.json。
+     * 有新版 → 直接跳浏览器下载页；其余结果一律 toast。
      */
-    fun checkUpdateSilently() {
+    fun checkUpdateNow() {
         viewModelScope.launch {
+            _busy.value = true
             val current = runCatching {
                 appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName
                     ?: "0"
             }.getOrDefault("0")
             val r = UpdateChecker.check(current)
-            if (r is UpdateChecker.Result.Newer) _updateResult.value = r
+            _busy.value = false
+            when (r) {
+                is UpdateChecker.Result.NotConfigured -> _toast.value = "还没配置更新地址"
+                is UpdateChecker.Result.UpToDate -> _toast.value = "已是最新版本 $current"
+                is UpdateChecker.Result.Failed -> _toast.value = "检查更新失败：${r.reason}"
+                is UpdateChecker.Result.Newer -> runCatching {
+                    appContext.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(r.info.url))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }.onFailure { _toast.value = "打不开下载页：${r.info.url}" }
+            }
         }
     }
 
