@@ -70,7 +70,8 @@ class LedgerRepository @Inject constructor(
                     name = seed.name,
                     iconKey = seed.iconKey,
                     sortOrder = i,
-                    builtIn = seed.builtIn
+                    builtIn = seed.builtIn,
+                    colorKey = seed.colorKey
                 )
             )
         }

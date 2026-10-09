@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
@@ -111,6 +112,14 @@ fun TransactionListScreen(
 ) {
     var openedId by remember { mutableStateOf<Long?>(null) }
     val balance = monthIncome - monthExpense
+
+    // 记完一笔（或改了日期）把列表拉回顶部：不然顶部数字变了、列表还停在原处，
+    // 看着像没记上（用户要求「每新增一条就上下刷新一下」）
+    val listState = rememberLazyListState()
+    val newestId = transactions.firstOrNull()?.id
+    LaunchedEffect(newestId) {
+        if (newestId != null) listState.animateScrollToItem(0)
+    }
 
     // 顶部「支出/收入」点一下筛选：null=全部，否则只显示该类型；再点一次回到全部
     var typeFilter by remember { mutableStateOf<Int?>(null) }
@@ -379,6 +388,7 @@ fun TransactionListScreen(
                 }
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     // 底部留 96dp：右下角的浮空 ＋ 会盖在列表上，
                     // 不留够最后几笔就永远点不到
@@ -731,6 +741,14 @@ private fun TxRow(
             }
         }
         Spacer(Modifier.width(8.dp))
+        // 这笔钱走的账户，放在金额左侧
+        Text(
+            text = tx.accountName,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
+        Spacer(Modifier.width(7.dp))
         Text(
             text = (if (isExpense) "-¥" else "+¥") + LedgerViewModel.formatCents(tx.amountCents),
             color = color,

@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dafeng.onlymoneynote.data.local.AccountEntity
 import com.dafeng.onlymoneynote.data.local.CategoryStat
 import com.dafeng.onlymoneynote.data.local.TxType
 import com.dafeng.onlymoneynote.data.local.TxWithCategory
@@ -102,6 +103,7 @@ fun StatsScreen(
 ) {
     val state by vm.stats.collectAsStateCompat()
     val control by vm.statsControl.collectAsStateCompat()
+    val accountOverviews by vm.accountOverviews.collectAsStateCompat()
     val (mode, _, _) = control
 
     // 展开的一级分类（按 parentName）。默认空集合 = 全部折叠，要看得手点开
@@ -273,6 +275,9 @@ fun StatsScreen(
                                 )
                             }
                         }
+                    } else if (tab == 2) {
+                        // 账户：这个区间每个账户走了多少钱
+                        AccountBreakdown(state.transactions, accountOverviews)
                     } else {
                         // 分类：先支出后收入
                         if (expenseGrouped.isEmpty() && incomeGrouped.isEmpty()) {
@@ -749,7 +754,7 @@ private fun ListModeTabs(tab: Int, onTab: (Int) -> Unit) {
             modifier = Modifier.fillMaxWidth().padding(3.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            listOf("分类", "明细").forEachIndexed { i, label ->
+            listOf("分类", "明细", "账户").forEachIndexed { i, label ->
                 val sel = i == tab
                 Box(
                     modifier = Modifier
@@ -774,6 +779,80 @@ private fun ListModeTabs(tab: Int, onTab: (Int) -> Unit) {
         }
     }
 }
+
+/**
+ * 统计页「账户」tab：区间内每个账户走了多少支出 / 收入，按支出从多到少排。
+ * 区间内的账单直接从 [StatsUiState.transactions] 现算，不另开查询。
+ */
+@Composable
+private fun AccountBreakdown(
+    txs: List<TxWithCategory>,
+    overviews: List<LedgerViewModel.AccountOverview>
+) {
+    if (txs.isEmpty()) {
+        EmptyHint("这个区间没有记录")
+        return
+    }
+    val rows = txs.groupBy { it.accountId }.map { (id, list) ->
+        AccountRowData(
+            overview = overviews.firstOrNull { it.account.id == id },
+            expense = list.filter { it.type == TxType.EXPENSE.value }.sumOf { it.amountCents },
+            income = list.filter { it.type == TxType.INCOME.value }.sumOf { it.amountCents }
+        )
+    }
+    val totalExpense = rows.sumOf { it.expense }
+
+    rows.sortedByDescending { it.expense }.forEach { r ->
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconTile(
+                iconKey = r.overview?.account?.iconKey ?: "emoji:💳",
+                size = 32.dp,
+                cornerRadius = 10.dp,
+                overrideColor = AppIcons.colorFromKey(r.overview?.account?.colorKey.orEmpty())
+            )
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    r.overview?.account?.name ?: AccountEntity.UNSPECIFIED_NAME,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "现有资产 ¥" + LedgerViewModel.formatCents(abs(r.overview?.balanceCents ?: 0L)) +
+                        (if (r.income > 0) "　·　收入 ¥" + LedgerViewModel.formatCents(r.income) else ""),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+            Text(
+                "¥" + LedgerViewModel.formatCents(r.expense),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = AppTheme.expense
+            )
+            if (totalExpense > 0) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "${r.expense * 100 / totalExpense}%",
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+private data class AccountRowData(
+    val overview: LedgerViewModel.AccountOverview?,
+    val expense: Long,
+    val income: Long
+)
 
 /** 明细行：图标 + 大类·小类 + 日期时间（含备注）+ 金额。点击进编辑 */
 @Composable

@@ -84,7 +84,8 @@ abstract class AppDatabase : RoomDatabase() {
                         "INSERT OR IGNORE INTO `account` " +
                             "(`id`, `name`, `iconKey`, `sortOrder`, `initialCents`, `builtIn`, `colorKey`) " +
                             "VALUES (${i + 1}, '${seed.name.replace("'", "''")}', " +
-                            "'${seed.iconKey.replace("'", "''")}', $i, 0, ${if (seed.builtIn) 1 else 0}, '')"
+                            "'${seed.iconKey.replace("'", "''")}', $i, 0, ${if (seed.builtIn) 1 else 0}, " +
+                            "'${seed.colorKey}')"
                     )
                 }
                 db.execSQL(

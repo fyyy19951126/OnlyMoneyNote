@@ -54,6 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -400,7 +401,8 @@ fun IconTile(
             iconKey = iconKey,
             size = if (isEmoji) size * 0.72f else size * 0.54f,
             modifier = Modifier,
-            tint = Color.White
+            // 深底白字、浅底深字：银行色块是深色，「工 / 招」这类汉字图标才不会糊成一团
+            tint = if (bg.luminance() < 0.62f) Color.White else Color(0xFF2B2B2B)
         )
     }
 }

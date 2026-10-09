@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -119,12 +122,15 @@ fun ImportExportSheet(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(24.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
-        title = { Text("导入导出", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
-        text = {
+    // 2026-10-09 用户明确要求：「右上角的分类管理、webdav备份、导入导出、以及账户功能，
+    // 都改成统计页面一样的左上角带返回的界面，不要弹出框」。
+    // 所以这里从 AlertDialog 弹层改成整页内容本体，标题和返回由外层 OverlayTopBar 画。
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
             Column {
                 IoRow(
                     icon = Icons.Outlined.Download,
@@ -178,15 +184,7 @@ fun ImportExportSheet(
                     onClick = { confirmClear = true }
                 )
             }
-        },
-        confirmButton = {
-            Text(
-                "关闭",
-                color = AppTheme.primary,
-                modifier = Modifier.clickable(onClick = onDismiss).padding(horizontal = 8.dp, vertical = 4.dp)
-            )
-        }
-    )
+    }
 
     /* ---------------- 清空确认：两步 ---------------- */
     // 第一步：讲清楚后果，让人先意识到在点什么东西

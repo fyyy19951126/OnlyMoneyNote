@@ -706,6 +706,8 @@ fun CategoryIcon(
             Text(
                 text = iconKey.removePrefix("emoji:"),
                 fontSize = (size.value * 0.72f).sp,
+                // 彩色 emoji 字形不吃颜色；「工 / 招」这类汉字图标要靠 tint 才看得清
+                color = tint,
                 textAlign = TextAlign.Center,
                 maxLines = 1
             )

@@ -12,6 +12,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -164,12 +165,9 @@ private fun AppRoot(
     // 记账/编辑层：null 表示没打开
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
 
-    // 我的页 / 账单页直接弹出的面板
-    var showIoSheet by remember { mutableStateOf(false) }
+    // 关于 / 主题外观：这两个还是弹层
     var showAbout by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
-    // 账户统计（首页结余行「账户」链接进来；长按行编辑，右上角 ＋ 新建）
-    var showAccounts by remember { mutableStateOf(false) }
 
     val transactions by vm.transactions.collectAsState()
     val categories by vm.categories.collectAsState()
@@ -235,14 +233,13 @@ private fun AppRoot(
                 .padding(bottom = padding.calculateBottomPadding())
         ) {
             when (top) {
-                // 分类管理 / 云端备份：改成大弹层（盖在主页上，右上角 ✕ 关），
-                // 不再是「白底顶栏 + 返回箭头」的独立一页。
-                Overlay.CATEGORY -> SheetDialog(
-                    onDismiss = { stack = stack.dropLast(1) },
-                    heightFraction = 0.9f,
-                    // 分类管理里面是灰底白卡片，把手那条也得是灰的，才不是一块白
-                    containerColor = MaterialTheme.colorScheme.background
+                // 2026-10-09 用户确认：分类管理 / 云端备份不要弹层，改成统计页那样左上角带返回的整页
+                Overlay.CATEGORY -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
                 ) {
+                    OverlayTopBar(title = "分类管理", onBack = { stack = stack.dropLast(1) })
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -260,10 +257,12 @@ private fun AppRoot(
                         )
                     }
                 }
-                Overlay.BACKUP -> SheetDialog(
-                    onDismiss = { stack = stack.dropLast(1) },
-                    heightFraction = 0.9f
+                Overlay.BACKUP -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
                 ) {
+                    OverlayTopBar(title = "云端备份", onBack = { stack = stack.dropLast(1) })
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -271,6 +270,37 @@ private fun AppRoot(
                     ) {
                         WebDavScreen(vm, webdav, busy)
                     }
+                }
+                // 2026-10-09 用户要求：导入导出 / 账户也改成统计页那样「左上角带返回」的整页
+                Overlay.IO -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                ) {
+                    OverlayTopBar(title = "导入导出", onBack = { stack = stack.dropLast(1) })
+                    ImportExportSheet(
+                        txCount = transactions.size,
+                        categoryCount = categories.size,
+                        onClearData = vm::clearAllData,
+                        onImportCsv = vm::importCsv,
+                        onImportJson = vm::restoreFromJson,
+                        onExportJson = { uri -> vm.exportToUri(uri) },
+                        onExportCsv = { uri -> vm.exportCsv(uri) },
+                        onDismiss = { stack = stack.dropLast(1) }
+                    )
+                }
+                Overlay.ACCOUNT -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                ) {
+                    OverlayTopBar(title = "账户", onBack = { stack = stack.dropLast(1) })
+                    AccountStatsSheet(
+                        overviews = accountOverviews,
+                        onAdd = vm::addAccount,
+                        onUpdate = vm::updateAccount,
+                        onDelete = vm::deleteAccount
+                    )
                 }
                 // 统计 / 报销：这两页自带蓝色渐变页头，不能再套白底 OverlayPage
                 // （两个页头叠一起很难看），返回键画在它们自己的页头里。
@@ -301,10 +331,10 @@ private fun AppRoot(
                     onOpenReimburse = { stack = stack + Overlay.REIMBURSE },
                     onOpenCategory = { stack = stack + Overlay.CATEGORY },
                     onOpenBackup = { stack = stack + Overlay.BACKUP },
-                    onOpenIo = { showIoSheet = true },
+                    onOpenIo = { stack = stack + Overlay.IO },
                     onOpenTheme = { showTheme = true },
                     onOpenAbout = { showAbout = true },
-                    onOpenAccounts = { showAccounts = true }
+                    onOpenAccounts = { stack = stack + Overlay.ACCOUNT }
                 )
             }
 
@@ -319,34 +349,13 @@ private fun AppRoot(
                 )
             }
 
-            // 导入导出 / 关于：我的页里弹出的两个面板
-            if (showIoSheet) {
-                ImportExportSheet(
-                    txCount = transactions.size,
-                    categoryCount = categories.size,
-                    onClearData = vm::clearAllData,
-                    onImportCsv = vm::importCsv,
-                    onImportJson = vm::restoreFromJson,
-                    onExportJson = { uri -> vm.exportToUri(uri) },
-                    onExportCsv = { uri -> vm.exportCsv(uri) },
-                    onDismiss = { showIoSheet = false }
-                )
-            }
+            // 关于：仍是弹层（用户只要求把分类管理 / 备份 / 导入导出 / 账户改成整页）
             if (showAbout) {
                 AboutDialog(
                     onDismiss = { showAbout = false },
                     checking = busy,
                     // 2026-10-09 用户要求：平时不联网；点这一行才查，有新版直接跳浏览器下载页
                     onTapVersion = { vm.checkUpdateNow() }
-                )
-            }
-            if (showAccounts) {
-                AccountStatsSheet(
-                    overviews = accountOverviews,
-                    onDismiss = { showAccounts = false },
-                    onAdd = vm::addAccount,
-                    onUpdate = vm::updateAccount,
-                    onDelete = vm::deleteAccount
                 )
             }
             if (showTheme) {
@@ -408,7 +417,7 @@ private fun AppRoot(
     }
 }
 
-private enum class Overlay { CATEGORY, BACKUP, STATS, REIMBURSE }
+private enum class Overlay { CATEGORY, BACKUP, STATS, REIMBURSE, IO, ACCOUNT }
 
 /** 二级页 = 白底顶栏 + 内容。顶栏带返回箭头、标题居中。 */
 @Composable
