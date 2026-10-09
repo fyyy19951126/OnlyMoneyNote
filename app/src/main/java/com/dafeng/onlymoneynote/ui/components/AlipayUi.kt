@@ -281,9 +281,9 @@ fun SheetDialog(
                     .fillMaxWidth()
                     .fillMaxHeight(heightFraction)
                     .graphicsLayer {
-                        // 进场：从屏幕顶滑到自己在的位置；再叠加用户往下拖的 dragY
-                        translationY =
-                            -(1f - enter.value) * screenHPx * (1f - heightFraction) + dragY
+                        // 进场只做渐入（用户要求：不要从某个方向滑进来）；再叠加用户往下拖的 dragY
+                        alpha = enter.value
+                        translationY = dragY
                     }
                     .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
                     .background(containerColor)

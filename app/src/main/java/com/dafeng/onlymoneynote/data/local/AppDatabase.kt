@@ -60,9 +60,9 @@ abstract class AppDatabase : RoomDatabase() {
         /**
          * v4 -> v5：新增 account 表，transaction 加 accountId。
          *
-         * 先建表并把「未指定」占死 id=1（和 [AccountEntity.UNSPECIFIED_ID] 一致，
-         * 全新安装的种子也按这个 id 插入，两条路径下 id 都对得上），
-         * 然后老账单一律归到它名下 —— 六千多笔一条都不动。
+         * 账户按 [DefaultAccounts.all] 的顺序插入，id 从 1 开始连续 —— 「未指定」排第一，
+         * 正好是 [AccountEntity.UNSPECIFIED_ID]，跟全新安装的种子走同一套 id。
+         * 老账单一律归「未指定」（DEFAULT 1），一条都不动。
          */
         val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -79,13 +79,14 @@ abstract class AppDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
-                db.execSQL(
-                    """
-                    INSERT OR IGNORE INTO `account`
-                        (`id`, `name`, `iconKey`, `sortOrder`, `initialCents`, `builtIn`, `colorKey`)
-                    VALUES (1, '${AccountEntity.UNSPECIFIED_NAME}', 'emoji:💳', 0, 0, 1, '')
-                    """.trimIndent()
-                )
+                DefaultAccounts.all().forEachIndexed { i, seed ->
+                    db.execSQL(
+                        "INSERT OR IGNORE INTO `account` " +
+                            "(`id`, `name`, `iconKey`, `sortOrder`, `initialCents`, `builtIn`, `colorKey`) " +
+                            "VALUES (${i + 1}, '${seed.name.replace("'", "''")}', " +
+                            "'${seed.iconKey.replace("'", "''")}', $i, 0, ${if (seed.builtIn) 1 else 0}, '')"
+                    )
+                }
                 db.execSQL(
                     "ALTER TABLE `transaction` ADD COLUMN `accountId` INTEGER NOT NULL DEFAULT 1"
                 )

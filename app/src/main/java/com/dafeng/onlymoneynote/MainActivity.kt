@@ -12,7 +12,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -48,7 +47,6 @@ import com.dafeng.onlymoneynote.data.ocr.OcrEngine
 import com.dafeng.onlymoneynote.ui.LedgerViewModel
 import com.dafeng.onlymoneynote.ui.components.OverlayTopBar
 import com.dafeng.onlymoneynote.ui.components.SheetDialog
-import com.dafeng.onlymoneynote.ui.screens.AccountManageSheet
 import com.dafeng.onlymoneynote.ui.screens.AccountStatsSheet
 import com.dafeng.onlymoneynote.ui.screens.AddTransactionScreen
 import com.dafeng.onlymoneynote.ui.screens.CategoryScreen
@@ -170,9 +168,8 @@ private fun AppRoot(
     var showIoSheet by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
-    // 账户统计 / 账户管理（首页结余行「账户」链接进来）
+    // 账户统计（首页结余行「账户」链接进来；长按行编辑，右上角 ＋ 新建）
     var showAccounts by remember { mutableStateOf(false) }
-    var showAccountManage by remember { mutableStateOf(false) }
 
     val transactions by vm.transactions.collectAsState()
     val categories by vm.categories.collectAsState()
@@ -347,16 +344,6 @@ private fun AppRoot(
                 AccountStatsSheet(
                     overviews = accountOverviews,
                     onDismiss = { showAccounts = false },
-                    onManage = {
-                        showAccounts = false
-                        showAccountManage = true
-                    }
-                )
-            }
-            if (showAccountManage) {
-                AccountManageSheet(
-                    overviews = accountOverviews,
-                    onDismiss = { showAccountManage = false },
                     onAdd = vm::addAccount,
                     onUpdate = vm::updateAccount,
                     onDelete = vm::deleteAccount
@@ -397,13 +384,10 @@ private fun AppRoot(
                 }
             }
 
-            // 提示条：支付宝式 —— 居中深色半透明胶囊，白字，淡入淡出
+            // 提示条：支付宝式 —— 居中深色半透明胶囊，白字，纯渐入渐出
             AnimatedVisibility(
                 visible = toast != null,
-                enter = fadeIn(tween(180)) + scaleIn(
-                    initialScale = 0.92f,
-                    animationSpec = tween(180)
-                ),
+                enter = fadeIn(tween(180)),
                 exit = fadeOut(tween(160)),
                 modifier = Modifier.align(Alignment.Center)
             ) {

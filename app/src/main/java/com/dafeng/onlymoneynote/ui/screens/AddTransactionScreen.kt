@@ -191,8 +191,9 @@ fun AddTransactionScreen(
                 .fillMaxWidth()
                 .fillMaxHeight(0.85f)
                     .graphicsLayer {
-                        // 进场：从自身高度处滑到 0；再叠加用户往下拖的 dragY
-                        translationY = (1f - enter.value) * size.height + dragY
+                        // 进场只做渐入（用户要求：不要从底下滑上来）；再叠加用户往下拖的 dragY
+                        alpha = enter.value
+                        translationY = dragY
                     }
                     .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
                     // 卡片必须**完全不透明**，否则底下的主页会透出来跟文字叠在一起
@@ -271,7 +272,14 @@ private fun AddTransactionForm(
 ) {
     val isEdit = editing != null
     val lastUsed by vm.lastUsed.collectAsStateCompat()
-    val accounts by vm.accounts.collectAsStateCompat()
+    // 账户按「用得多排前面」排序：笔数降序，同笔数按用户自己的排序
+    val accountOverviews by vm.accountOverviews.collectAsStateCompat()
+    val accounts = remember(accountOverviews) {
+        accountOverviews.sortedWith(
+            compareByDescending<LedgerViewModel.AccountOverview> { it.txCount }
+                .thenBy { it.account.sortOrder }
+        ).map { it.account }
+    }
 
     // 新建时**默认支出**（多数记账都是支出场景）。
     // 之前用 lastUsed.type 记忆上次选择，上次记了收入就连着几次都默认收入，
@@ -539,14 +547,6 @@ private fun AddTransactionForm(
                 }
             }
 
-                        /* ---------- 账户：这笔钱从哪个账户走 ---------- */
-                        AccountPickerRow(
-                            accounts = accounts,
-                            selectedId = accountId,
-                            accent = accent,
-                            onSelect = { accountId = it }
-                        )
-
                 }
             }
             }
@@ -574,6 +574,14 @@ private fun AddTransactionForm(
             Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
             ) {
+                /* ---------- 账户：这笔钱从哪个账户走（紧贴金额行上方） ---------- */
+                AccountPickerRow(
+                    accounts = accounts,
+                    selectedId = accountId,
+                    accent = accent,
+                    onSelect = { accountId = it }
+                )
+
                 // 金额行：备注（左，3 列宽）+ 金额（右，2 列宽 = 符号列+功能列）
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
@@ -941,9 +949,9 @@ private fun ChildPickerPopup(
     }
     // 二级分类的图标块颜色永远跟一级走（一级没自定义色就由 IconTile 回退到分组色）
     val tileColor = com.dafeng.onlymoneynote.util.AppIcons.colorFromKey(parent.colorKey)
-    // 弹层内容可能比屏幕高，超了就压缩
-    val scale = remember { Animatable(0.7f) }
-    LaunchedEffect(Unit) { scale.animateTo(1f, tween(170, easing = FastOutSlowInEasing)) }
+    // 进场只做渐入（用户要求：不要从箭头缩放展开）
+    val enter = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { enter.animateTo(1f, tween(170, easing = FastOutSlowInEasing)) }
 
     Popup(
         properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = true),
@@ -952,35 +960,17 @@ private fun ChildPickerPopup(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.34f * scale.value))
+                .background(Color.Black.copy(alpha = 0.34f * enter.value))
                 .clickable(
                     indication = null,
                     interactionSource = remember { MutableInteractionSource() }
                 ) { onDismiss() }
         ) {
-            // 屏幕坐标 → 以「面板左上角为原点、面板已居中」为参照的 transformOrigin
-            val anchorX = with(density) { anchor.x.toDp().value }
-            val anchorY = with(density) { anchor.y.toDp().value }
-            val screenW = with(density) { LocalConfiguration.current.screenWidthDp.dp.value }
-            val screenH = with(density) { LocalConfiguration.current.screenHeightDp.dp.value }
-            val panelW = panelWidth.value
-            // 面板中心在屏幕的位置
-            val panelCenterX = screenW / 2f
-            val panelCenterY = screenH / 2f
-            // 箭头相对面板中心的偏移，映射到 0~1（transformOrigin 的取值范围）
-            val originX = ((anchorX - panelCenterX) / panelW + 0.5f).coerceIn(0f, 1f)
-            val originY = ((anchorY - panelCenterY) / (panelW * 1.2f) + 0.5f).coerceIn(0f, 1f)
-
             Column(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .width(panelWidth)
-                    .graphicsLayer {
-                        transformOrigin = TransformOrigin(originX, originY)
-                        scaleX = scale.value
-                        scaleY = scale.value
-                        alpha = ((scale.value - 0.7f) / 0.3f).coerceIn(0f, 1f)
-                    }
+                    .graphicsLayer { alpha = enter.value }
                     .clip(RoundedCornerShape(18.dp))
                     .background(MaterialTheme.colorScheme.surface)
                     .padding(12.dp)
@@ -1029,7 +1019,7 @@ private fun ChildPickerPopup(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = (screenH * 0.52f).dp)
+                        .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.52f).dp)
                         .verticalScroll(rememberScrollState())
                 ) {
                 Column {
@@ -1767,7 +1757,7 @@ private fun trimNumber(d: Double): String {
 /* ------------------------------------------------------------------ */
 
 /**
- * 记一笔里的「这笔钱从哪个账户走」：横向滚动的小胶囊。
+ * 记一笔里的「这笔钱从哪个账户走」：横向滚动的小胶囊，按使用频率排序。
  * 账户一般就七八个，滚一行够用，不像分类那样铺网格。
  */
 @Composable
@@ -1782,30 +1772,29 @@ private fun AccountPickerRow(
         modifier = Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 6.dp),
+            .padding(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(7.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text("账户", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         accounts.forEach { a ->
             val selected = a.id == selectedId
             Row(
                 modifier = Modifier
-                    .height(32.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .height(38.dp)
+                    .clip(RoundedCornerShape(12.dp))
                     .background(if (selected) accent else MaterialTheme.colorScheme.surfaceVariant)
                     .clickable { onSelect(a.id) }
-                    .padding(horizontal = 7.dp),
+                    .padding(horizontal = 9.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconTile(
-                    iconKey = a.iconKey, size = 18.dp, cornerRadius = 6.dp,
+                    iconKey = a.iconKey, size = 24.dp, cornerRadius = 8.dp,
                     overrideColor = com.dafeng.onlymoneynote.util.AppIcons.colorFromKey(a.colorKey)
                 )
-                Spacer(Modifier.width(5.dp))
+                Spacer(Modifier.width(6.dp))
                 Text(
                     a.name,
-                    fontSize = 12.5.sp,
+                    fontSize = 14.sp,
                     maxLines = 1,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     color = if (selected) MaterialTheme.colorScheme.onPrimary
