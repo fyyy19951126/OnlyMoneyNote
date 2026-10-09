@@ -36,9 +36,36 @@ enum class TxType(val value: Int) {
     }
 }
 
+/**
+ * 资金账户（支付宝 / 微信 / 银行卡 …）。
+ *
+ * **余额不单独存**：当前余额 = [initialCents] + 该账户名下账单的净流水
+ * （收入加、支出减）。这样删改账单天然就回滚了，不需要补偿逻辑。
+ * [initialCents] 是「期初金额」，用户在账户管理里自己填。
+ */
+@Entity(tableName = "account")
+data class AccountEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val iconKey: String,
+    val sortOrder: Int = 0,
+    /** 期初金额，单位「分」，可以为负（比如信用卡欠款） */
+    val initialCents: Long = 0,
+    /** 内置账户（「未指定」）不可删 */
+    val builtIn: Boolean = false,
+    /** 图标块配色（"#RRGGBB"）。空 = 按图标分组色 */
+    val colorKey: String = ""
+) {
+    companion object {
+        /** 老账单和没选账户的账单都归它；它的 id 由迁移和种子共同固定 */
+        const val UNSPECIFIED_ID = 1L
+        const val UNSPECIFIED_NAME = "未指定"
+    }
+}
+
 @Entity(
     tableName = "transaction",
-    indices = [Index("categoryId"), Index("dateMillis"), Index("reimbursed")]
+    indices = [Index("categoryId"), Index("dateMillis"), Index("reimbursed"), Index("accountId")]
 )
 data class TransactionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -50,5 +77,7 @@ data class TransactionEntity(
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     /** 是否是报销相关的账单。首页「报销」入口只统计、只列出这一类。 */
-    val reimbursed: Boolean = false
+    val reimbursed: Boolean = false,
+    /** 资金账户。默认「未指定」，导入老数据时不用改 */
+    val accountId: Long = AccountEntity.UNSPECIFIED_ID
 )

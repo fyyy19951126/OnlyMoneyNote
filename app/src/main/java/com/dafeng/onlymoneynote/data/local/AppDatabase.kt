@@ -6,13 +6,14 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [CategoryEntity::class, TransactionEntity::class],
-    version = 4,
+    entities = [CategoryEntity::class, TransactionEntity::class, AccountEntity::class],
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun transactionDao(): TransactionDao
     abstract fun categoryDao(): CategoryDao
+    abstract fun accountDao(): AccountDao
 
     companion object {
         /**
@@ -53,6 +54,44 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `category` ADD COLUMN colorKey TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v4 -> v5：新增 account 表，transaction 加 accountId。
+         *
+         * 先建表并把「未指定」占死 id=1（和 [AccountEntity.UNSPECIFIED_ID] 一致，
+         * 全新安装的种子也按这个 id 插入，两条路径下 id 都对得上），
+         * 然后老账单一律归到它名下 —— 六千多笔一条都不动。
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `account` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `iconKey` TEXT NOT NULL,
+                        `sortOrder` INTEGER NOT NULL,
+                        `initialCents` INTEGER NOT NULL,
+                        `builtIn` INTEGER NOT NULL,
+                        `colorKey` TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT OR IGNORE INTO `account`
+                        (`id`, `name`, `iconKey`, `sortOrder`, `initialCents`, `builtIn`, `colorKey`)
+                    VALUES (1, '${AccountEntity.UNSPECIFIED_NAME}', 'emoji:💳', 0, 0, 1, '')
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "ALTER TABLE `transaction` ADD COLUMN `accountId` INTEGER NOT NULL DEFAULT 1"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_transaction_accountId` ON `transaction` (`accountId`)"
+                )
             }
         }
     }

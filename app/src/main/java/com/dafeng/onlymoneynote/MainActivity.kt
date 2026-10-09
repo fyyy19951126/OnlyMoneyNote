@@ -48,6 +48,8 @@ import com.dafeng.onlymoneynote.data.ocr.OcrEngine
 import com.dafeng.onlymoneynote.ui.LedgerViewModel
 import com.dafeng.onlymoneynote.ui.components.OverlayTopBar
 import com.dafeng.onlymoneynote.ui.components.SheetDialog
+import com.dafeng.onlymoneynote.ui.screens.AccountManageSheet
+import com.dafeng.onlymoneynote.ui.screens.AccountStatsSheet
 import com.dafeng.onlymoneynote.ui.screens.AddTransactionScreen
 import com.dafeng.onlymoneynote.ui.screens.CategoryScreen
 import com.dafeng.onlymoneynote.ui.screens.AboutDialog
@@ -168,6 +170,9 @@ private fun AppRoot(
     var showIoSheet by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
+    // 账户统计 / 账户管理（首页结余行「账户」链接进来）
+    var showAccounts by remember { mutableStateOf(false) }
+    var showAccountManage by remember { mutableStateOf(false) }
 
     val transactions by vm.transactions.collectAsState()
     val categories by vm.categories.collectAsState()
@@ -177,6 +182,7 @@ private fun AppRoot(
     val reimbursedTxs by vm.reimbursedTxs.collectAsState()
     val toast by vm.toast.collectAsState()
     val busy by vm.busy.collectAsState()
+    val accountOverviews by vm.accountOverviews.collectAsState()
 
     // 提示条：显示 1.8 秒自动消失。
     // 用 LaunchedEffect(toast) 做延时 —— toast 变了协程就重启，不会误清下一条。
@@ -300,7 +306,8 @@ private fun AppRoot(
                     onOpenBackup = { stack = stack + Overlay.BACKUP },
                     onOpenIo = { showIoSheet = true },
                     onOpenTheme = { showTheme = true },
-                    onOpenAbout = { showAbout = true }
+                    onOpenAbout = { showAbout = true },
+                    onOpenAccounts = { showAccounts = true }
                 )
             }
 
@@ -334,6 +341,25 @@ private fun AppRoot(
                     checking = busy,
                     // 2026-10-09 用户要求：平时不联网；点这一行才查，有新版直接跳浏览器下载页
                     onTapVersion = { vm.checkUpdateNow() }
+                )
+            }
+            if (showAccounts) {
+                AccountStatsSheet(
+                    overviews = accountOverviews,
+                    onDismiss = { showAccounts = false },
+                    onManage = {
+                        showAccounts = false
+                        showAccountManage = true
+                    }
+                )
+            }
+            if (showAccountManage) {
+                AccountManageSheet(
+                    overviews = accountOverviews,
+                    onDismiss = { showAccountManage = false },
+                    onAdd = vm::addAccount,
+                    onUpdate = vm::updateAccount,
+                    onDelete = vm::deleteAccount
                 )
             }
             if (showTheme) {

@@ -1,8 +1,12 @@
 package com.dafeng.onlymoneynote.data.repo
 
 import com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter
+import com.dafeng.onlymoneynote.data.local.AccountDao
+import com.dafeng.onlymoneynote.data.local.AccountEntity
+import com.dafeng.onlymoneynote.data.local.AccountPeriodStat
 import com.dafeng.onlymoneynote.data.local.CategoryDao
 import com.dafeng.onlymoneynote.data.local.CategoryEntity
+import com.dafeng.onlymoneynote.data.local.DefaultAccounts
 import com.dafeng.onlymoneynote.data.local.DefaultCategories
 import com.dafeng.onlymoneynote.data.local.MonthlySummary
 import com.dafeng.onlymoneynote.data.local.TransactionDao
@@ -16,12 +20,61 @@ import javax.inject.Singleton
 @Singleton
 class LedgerRepository @Inject constructor(
     private val txDao: TransactionDao,
-    private val categoryDao: CategoryDao
+    private val categoryDao: CategoryDao,
+    private val accountDao: AccountDao
 ) {
 
     fun observeTransactions(): Flow<List<TxWithCategory>> = txDao.observeAll()
 
     fun observeCategories(): Flow<List<CategoryEntity>> = categoryDao.observeAll()
+
+    // ============ 账户 ============
+
+    fun observeAccounts(): Flow<List<AccountEntity>> = accountDao.observeAll()
+
+    /** 每个账户的全时段净流水（余额 = 期初 + 这个值） */
+    fun observeAccountNet() = txDao.observeAccountNet()
+
+    /** 本月每个账户的收入 / 支出 */
+    fun observeAccountMonthStats(): Flow<List<AccountPeriodStat>> {
+        val (start, end) = currentMonthRange()
+        return txDao.observeAccountPeriodStats(start, end)
+    }
+
+    suspend fun addAccount(account: AccountEntity): Long = accountDao.insert(account)
+
+    suspend fun updateAccount(account: AccountEntity) = accountDao.update(account)
+
+    suspend fun deleteAccount(id: Long) = accountDao.deleteById(id)
+
+    suspend fun countTransactionsInAccount(id: Long) = txDao.countTransactionsInAccount(id)
+
+    /** 删账户前把它名下的账单转移到目标账户（一般是「未指定」）。 */
+    suspend fun moveTransactionsToAccount(from: Long, to: Long) =
+        txDao.moveTransactionsToAccount(from, to)
+
+    suspend fun accountsOnce(): List<AccountEntity> = accountDao.getAllOnce()
+
+    suspend fun clearAccounts() = accountDao.clearAll()
+
+    /**
+     * 首次启动写入内置账户。「未指定」用固定 id=[AccountEntity.UNSPECIFIED_ID] 插入，
+     * 和 v4→v5 迁移里那条完全一致，老账单的默认 accountId 才指得对。
+     */
+    suspend fun seedAccountsIfEmpty() {
+        if (accountDao.count() > 0) return
+        DefaultAccounts.all().forEachIndexed { i, seed ->
+            accountDao.insert(
+                AccountEntity(
+                    id = if (seed.builtIn) AccountEntity.UNSPECIFIED_ID else 0,
+                    name = seed.name,
+                    iconKey = seed.iconKey,
+                    sortOrder = i,
+                    builtIn = seed.builtIn
+                )
+            )
+        }
+    }
 
     fun observeRange(start: Long, end: Long) = txDao.observeRange(start, end)
 

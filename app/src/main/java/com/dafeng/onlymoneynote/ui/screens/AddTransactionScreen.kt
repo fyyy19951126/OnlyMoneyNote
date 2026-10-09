@@ -46,6 +46,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -103,6 +104,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dafeng.onlymoneynote.data.local.CategoryEntity
+import com.dafeng.onlymoneynote.data.local.AccountEntity
 import com.dafeng.onlymoneynote.data.local.TxType
 import com.dafeng.onlymoneynote.data.local.TxWithCategory
 import com.dafeng.onlymoneynote.ui.LedgerViewModel
@@ -269,6 +271,7 @@ private fun AddTransactionForm(
 ) {
     val isEdit = editing != null
     val lastUsed by vm.lastUsed.collectAsStateCompat()
+    val accounts by vm.accounts.collectAsStateCompat()
 
     // 新建时**默认支出**（多数记账都是支出场景）。
     // 之前用 lastUsed.type 记忆上次选择，上次记了收入就连着几次都默认收入，
@@ -282,6 +285,10 @@ private fun AddTransactionForm(
     var reimbursed by remember { mutableStateOf(editing?.reimbursed ?: false) }
     // 当前选中的分类（二级优先）
     var categoryId by remember { mutableLongStateOf(editing?.categoryId ?: 0L) }
+    // 这笔钱走哪个账户。新建先占「未指定」，等 lastUsed 到位再换成上次用的
+    var accountId by remember {
+        mutableLongStateOf(editing?.accountId ?: AccountEntity.UNSPECIFIED_ID)
+    }
     var dateMillis by remember {
         mutableLongStateOf(editing?.dateMillis ?: System.currentTimeMillis())
     }
@@ -316,12 +323,14 @@ private fun AddTransactionForm(
         if (initialImage != null) vm.recognizeImage(context, initialImage)
     }
 
-    // 新建：自动带出上次用的分类（分类还在、类型对得上才带）
+    // 新建：自动带出上次用的分类和账户（分类还在、类型对得上才带）
     LaunchedEffect(lastUsed, isEdit) {
-        if (!isEdit && categoryId == 0L && lastUsed.categoryId != 0L) {
+        if (isEdit) return@LaunchedEffect
+        if (categoryId == 0L && lastUsed.categoryId != 0L) {
             val c = categories.firstOrNull { it.id == lastUsed.categoryId }
             if (c != null && c.type == type) categoryId = c.id
         }
+        if (accounts.any { it.id == lastUsed.accountId }) accountId = lastUsed.accountId
     }
 
     // OCR 预填：**只填金额、类型、时间**，备注一律不碰（那是用户自己的字段）
@@ -402,13 +411,14 @@ private fun AddTransactionForm(
                 categoryId = categoryId,
                 dateMillis = dateMillis,
                 note = note,
-                reimbursed = reimbursed
+                reimbursed = reimbursed,
+                accountId = accountId
             )
         } else {
             // 新建：用界面上选的时间（默认就是打开时的「现在」）
             vm.addTransaction(
                 finalAmount, TxType.from(type), categoryId,
-                dateMillis, note, reimbursed
+                dateMillis, note, reimbursed, accountId
             )
         }
         if (keepOpen && !isEdit) {
@@ -528,6 +538,14 @@ private fun AddTransactionForm(
                     }
                 }
             }
+
+                        /* ---------- 账户：这笔钱从哪个账户走 ---------- */
+                        AccountPickerRow(
+                            accounts = accounts,
+                            selectedId = accountId,
+                            accent = accent,
+                            onSelect = { accountId = it }
+                        )
 
                 }
             }
@@ -1742,4 +1760,58 @@ private fun trimNumber(d: Double): String {
     if (kotlin.math.abs(rounded) >= 1_000_000_000L) return "0"
     if (rounded == rounded.toLong().toDouble()) return rounded.toLong().toString()
     return "%.2f".format(rounded).trimEnd('0').trimEnd('.')
+}
+
+/* ------------------------------------------------------------------ */
+/* 账户选择行                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 记一笔里的「这笔钱从哪个账户走」：横向滚动的小胶囊。
+ * 账户一般就七八个，滚一行够用，不像分类那样铺网格。
+ */
+@Composable
+private fun AccountPickerRow(
+    accounts: List<AccountEntity>,
+    selectedId: Long,
+    accent: Color,
+    onSelect: (Long) -> Unit
+) {
+    if (accounts.isEmpty()) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Text("账户", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        accounts.forEach { a ->
+            val selected = a.id == selectedId
+            Row(
+                modifier = Modifier
+                    .height(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (selected) accent else MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { onSelect(a.id) }
+                    .padding(horizontal = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconTile(
+                    iconKey = a.iconKey, size = 18.dp, cornerRadius = 6.dp,
+                    overrideColor = com.dafeng.onlymoneynote.util.AppIcons.colorFromKey(a.colorKey)
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    a.name,
+                    fontSize = 12.5.sp,
+                    maxLines = 1,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (selected) MaterialTheme.colorScheme.onPrimary
+                    else MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
 }

@@ -129,14 +129,14 @@ fun ImportExportSheet(
                 IoRow(
                     icon = Icons.Outlined.Download,
                     title = "导入账单 CSV",
-                    subtitle = "日期、一级分类、二级分类（没有即为空）、收支、金额、备注、报销",
+                    subtitle = "日期、一级分类、二级分类（没有即为空）、收支、金额、备注、报销、账户",
                     onClick = { pickCsv.launch(arrayOf("*/*")) }
                 )
                 Spacer(Modifier.height(8.dp))
                 IoRow(
                     icon = Icons.Outlined.UploadFile,
                     title = "导出账单 CSV",
-                    subtitle = "日期、一级分类、二级分类（没有即为空）、收支、金额、备注、报销",
+                    subtitle = "日期、一级分类、二级分类（没有即为空）、收支、金额、备注、报销、账户",
                     onClick = {
                         val ts = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.CHINA)
                             .format(java.util.Date())
@@ -147,14 +147,14 @@ fun ImportExportSheet(
                 IoRow(
                     icon = Icons.Outlined.Restore,
                     title = "导入 JSON 备份文件",
-                    subtitle = "包含分类、主题和账单",
+                    subtitle = "包含分类、账户、主题和账单",
                     onClick = { pickJson.launch(arrayOf("*/*")) }
                 )
                 Spacer(Modifier.height(8.dp))
                 IoRow(
                     icon = Icons.Outlined.UploadFile,
                     title = "导出 JSON 备份文件",
-                    subtitle = "包含分类、主题和账单",
+                    subtitle = "包含分类、账户、主题和账单",
                     onClick = {
                         val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.CHINA)
                             .format(java.util.Date())

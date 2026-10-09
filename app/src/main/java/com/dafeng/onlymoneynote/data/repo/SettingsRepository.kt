@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.dafeng.onlymoneynote.data.local.AccountEntity
 import com.dafeng.onlymoneynote.data.remote.WebDavClient
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -31,6 +32,7 @@ class SettingsRepository @Inject constructor(
     private val keyCustomColor = intPreferencesKey("app_custom_color")
     private val keyLastCategory = longPreferencesKey("last_category_id")
     private val keyLastType = intPreferencesKey("last_type")
+    private val keyLastAccount = longPreferencesKey("last_account_id")
     private val keyAppTitle = stringPreferencesKey("app_title")
 
     data class WebDavSettings(
@@ -143,20 +145,26 @@ class SettingsRepository @Inject constructor(
         }
     }
 
-    /** 上次记账用的分类与收支类型 —— 记一笔时自动带出来，省得每次重选 */
-    data class LastUsed(val categoryId: Long = 0, val type: Int = 0)
+    /** 上次记账用的分类、收支类型与账户 —— 记一笔时自动带出来，省得每次重选 */
+    data class LastUsed(
+        val categoryId: Long = 0,
+        val type: Int = 0,
+        val accountId: Long = AccountEntity.UNSPECIFIED_ID
+    )
 
     val lastUsed: Flow<LastUsed> = context.dataStore.data.map { prefs ->
         LastUsed(
             categoryId = prefs[keyLastCategory] ?: 0L,
-            type = prefs[keyLastType] ?: 0
+            type = prefs[keyLastType] ?: 0,
+            accountId = prefs[keyLastAccount] ?: AccountEntity.UNSPECIFIED_ID
         )
     }
 
-    suspend fun saveLastUsed(categoryId: Long, type: Int) {
+    suspend fun saveLastUsed(categoryId: Long, type: Int, accountId: Long) {
         context.dataStore.edit {
             it[keyLastCategory] = categoryId
             it[keyLastType] = type
+            it[keyLastAccount] = accountId
         }
     }
 

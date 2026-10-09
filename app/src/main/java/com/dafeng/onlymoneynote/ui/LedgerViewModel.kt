@@ -5,6 +5,9 @@ import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.dafeng.onlymoneynote.data.local.AccountEntity
+import com.dafeng.onlymoneynote.data.local.AccountNet
+import com.dafeng.onlymoneynote.data.local.AccountPeriodStat
 import com.dafeng.onlymoneynote.data.local.CategoryEntity
 import com.dafeng.onlymoneynote.data.local.CategoryStat
 import com.dafeng.onlymoneynote.data.local.TxType
@@ -43,6 +46,7 @@ class LedgerViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             ledger.seedIfEmpty()
+            ledger.seedAccountsIfEmpty()
             // 旧版默认主题是红，新版默认换成支付宝蓝（界面整体改版）。
             // 只迁移一次存量值：迁移后用户再手动选红会原样保存，不会被覆盖。
             settings.migrateLegacyTheme()
@@ -61,6 +65,96 @@ class LedgerViewModel @Inject constructor(
 
     val categories: StateFlow<List<CategoryEntity>> =
         ledger.observeCategories().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // ============ 账户 ============
+
+    val accounts: StateFlow<List<AccountEntity>> =
+        ledger.observeAccounts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val accountNet: StateFlow<List<AccountNet>> =
+        ledger.observeAccountNet().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val accountMonth: StateFlow<List<AccountPeriodStat>> =
+        ledger.observeAccountMonthStats().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** 账户统计页的一行：余额 = 期初 + 全时段净流水（收入加、支出减） */
+    data class AccountOverview(
+        val account: AccountEntity,
+        val balanceCents: Long,
+        val monthExpenseCents: Long,
+        val monthIncomeCents: Long,
+        val txCount: Int
+    )
+
+    val accountOverviews: StateFlow<List<AccountOverview>> =
+        combine(accounts, accountNet, accountMonth) { accs, net, month ->
+            accs.map { a ->
+                AccountOverview(
+                    account = a,
+                    balanceCents = a.initialCents +
+                        (net.firstOrNull { it.accountId == a.id }?.netCents ?: 0L),
+                    monthExpenseCents = month.firstOrNull { it.accountId == a.id }?.expenseCents ?: 0L,
+                    monthIncomeCents = month.firstOrNull { it.accountId == a.id }?.incomeCents ?: 0L,
+                    txCount = net.firstOrNull { it.accountId == a.id }?.count ?: 0
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** 新建账户。[initialYuan] 期初金额（元，可为负）。 */
+    fun addAccount(name: String, iconKey: String, initialYuan: String, colorKey: String = "") {
+        if (name.isBlank()) { showToast("账户名不能是空的"); return }
+        viewModelScope.launch {
+            ledger.addAccount(
+                AccountEntity(
+                    name = name.trim(),
+                    iconKey = iconKey,
+                    sortOrder = (accounts.value.maxOfOrNull { it.sortOrder } ?: -1) + 1,
+                    initialCents = parseAmountToCents(initialYuan) ?: 0L,
+                    colorKey = colorKey
+                )
+            )
+            showToast("已添加账户")
+        }
+    }
+
+    fun updateAccount(
+        id: Long,
+        name: String,
+        iconKey: String,
+        initialYuan: String,
+        colorKey: String
+    ) {
+        if (name.isBlank()) { showToast("账户名不能是空的"); return }
+        viewModelScope.launch {
+            val old = accounts.value.firstOrNull { it.id == id } ?: return@launch
+            ledger.updateAccount(
+                old.copy(
+                    name = name.trim(),
+                    iconKey = iconKey,
+                    initialCents = parseAmountToCents(initialYuan) ?: old.initialCents,
+                    colorKey = colorKey
+                )
+            )
+            showToast("已保存")
+        }
+    }
+
+    /** 删账户：名下账单先转移到「未指定」，账户表里不留孤儿。 */
+    fun deleteAccount(id: Long) {
+        if (id == AccountEntity.UNSPECIFIED_ID) { showToast("「未指定」不能删除"); return }
+        viewModelScope.launch {
+            ledger.moveTransactionsToAccount(id, AccountEntity.UNSPECIFIED_ID)
+            ledger.deleteAccount(id)
+            if (settings.lastUsed.first().accountId == id) {
+                settings.saveLastUsed(
+                    settings.lastUsed.first().categoryId,
+                    settings.lastUsed.first().type,
+                    AccountEntity.UNSPECIFIED_ID
+                )
+            }
+            showToast("已删除，账单已转到「未指定」")
+        }
+    }
 
     /** 全部报销账单（首页「报销」入口点进来显示这个） */
     val reimbursedTxs: StateFlow<List<TxWithCategory>> =
@@ -112,8 +206,8 @@ class LedgerViewModel @Inject constructor(
             SettingsRepository.LastUsed()
         )
 
-    fun saveLastUsed(categoryId: Long, type: Int) {
-        viewModelScope.launch { settings.saveLastUsed(categoryId, type) }
+    fun saveLastUsed(categoryId: Long, type: Int, accountId: Long) {
+        viewModelScope.launch { settings.saveLastUsed(categoryId, type, accountId) }
     }
 
     fun setTheme(themeId: String) {
@@ -442,7 +536,8 @@ class LedgerViewModel @Inject constructor(
         categoryId: Long,
         dateMillis: Long,
         note: String,
-        reimbursed: Boolean = false
+        reimbursed: Boolean = false,
+        accountId: Long = AccountEntity.UNSPECIFIED_ID
     ) {
         val amount = parseAmountToCents(amountYuan)
         if (amount == null || amount <= 0) {
@@ -457,11 +552,12 @@ class LedgerViewModel @Inject constructor(
                     categoryId = categoryId,
                     dateMillis = dateMillis,
                     note = note.trim(),
-                    reimbursed = reimbursed
+                    reimbursed = reimbursed,
+                    accountId = accountId
                 )
             )
-            // 记住这次用的分类，下次记一笔自动带出来
-            settings.saveLastUsed(categoryId, type.value)
+            // 记住这次用的分类和账户，下次记一笔自动带出来
+            settings.saveLastUsed(categoryId, type.value, accountId)
             refreshWidgets()
             showToast("已记一笔")
         }
@@ -483,7 +579,8 @@ class LedgerViewModel @Inject constructor(
         categoryId: Long,
         dateMillis: Long,
         note: String,
-        reimbursed: Boolean = false
+        reimbursed: Boolean = false,
+        accountId: Long = AccountEntity.UNSPECIFIED_ID
     ) {
         val amount = parseAmountToCents(amountYuan)
         if (amount == null || amount <= 0) {
@@ -499,7 +596,8 @@ class LedgerViewModel @Inject constructor(
                     categoryId = categoryId,
                     dateMillis = dateMillis,
                     note = note.trim(),
-                    reimbursed = reimbursed
+                    reimbursed = reimbursed,
+                    accountId = accountId
                 )
             )
             refreshWidgets()

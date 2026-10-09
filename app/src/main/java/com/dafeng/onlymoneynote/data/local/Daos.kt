@@ -23,7 +23,10 @@ data class TxWithCategory(
     /** 图标块配色 key：优先取一级分类的自定义色；空 = 按一级图标的分组色 */
     val colorKey: String = "",
     /** 一级分类的图标 key（本身是一级分类时就是自己的），用来兜底算分组色 */
-    val parentIconKey: String = "more_horiz"
+    val parentIconKey: String = "more_horiz",
+    /** 资金账户 id + 名称（编辑账单时要带回原账户，列表里也要显示） */
+    val accountId: Long = AccountEntity.UNSPECIFIED_ID,
+    val accountName: String = AccountEntity.UNSPECIFIED_NAME
 )
 
 /** 报销汇总：按收支类型分组的报销金额 + 笔数 */
@@ -89,6 +92,9 @@ interface TransactionDao {
     @Insert
     suspend fun insertCategory(category: CategoryEntity): Long
 
+    @Query("SELECT * FROM account")
+    suspend fun getAllAccountsOnce(): List<AccountEntity>
+
     @Insert
     suspend fun insertTransactions(list: List<TransactionEntity>)
 
@@ -106,6 +112,7 @@ interface TransactionDao {
         clearAll()
         // 库里已有的 + 这一轮刚建出来的，一起当「是否已存在」的判断依据
         val live = getAllCategoriesOnce().toMutableList()
+        val accounts = getAllAccountsOnce()
         val idByKey = HashMap<String, Long>()
         var created = 0
 
@@ -143,7 +150,11 @@ interface TransactionDao {
                 categoryId = cid,
                 dateMillis = t.dateMillis,
                 note = t.note,
-                reimbursed = t.reimbursed
+                reimbursed = t.reimbursed,
+                // 账户按名字认，认不出来归「未指定」：导入不该顺手造出一堆同名账户
+                accountId = t.accountName.trim()
+                    .let { name -> accounts.firstOrNull { it.name == name }?.id }
+                    ?: AccountEntity.UNSPECIFIED_ID
             )
         }
         insertTransactions(rows)
@@ -160,10 +171,13 @@ interface TransactionDao {
                COALESCE(p.colorKey, c.colorKey, '') AS colorKey,
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
-               t.reimbursed AS reimbursed
+               t.reimbursed AS reimbursed,
+               t.accountId AS accountId,
+               COALESCE(a.name, '未指定') AS accountName
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId
+        LEFT JOIN account a ON a.id = t.accountId
         ORDER BY t.dateMillis DESC, t.id DESC
         """
     )
@@ -225,10 +239,13 @@ interface TransactionDao {
                COALESCE(p.colorKey, c.colorKey, '') AS colorKey,
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
-               t.reimbursed AS reimbursed
+               t.reimbursed AS reimbursed,
+               t.accountId AS accountId,
+               COALESCE(a.name, '未指定') AS accountName
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId
+        LEFT JOIN account a ON a.id = t.accountId
         WHERE t.dateMillis >= :startMillis AND t.dateMillis < :endMillis
         ORDER BY t.dateMillis DESC, t.id DESC
         """
@@ -266,10 +283,13 @@ interface TransactionDao {
                COALESCE(p.colorKey, c.colorKey, '') AS colorKey,
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
-               t.reimbursed AS reimbursed
+               t.reimbursed AS reimbursed,
+               t.accountId AS accountId,
+               COALESCE(a.name, '未指定') AS accountName
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId
+        LEFT JOIN account a ON a.id = t.accountId
         WHERE t.reimbursed = 1
         ORDER BY t.dateMillis DESC, t.id DESC
         """
@@ -288,9 +308,86 @@ interface TransactionDao {
         """
     )
     fun observeReimburseStats(): Flow<List<ReimburseStat>>
+
+    /**
+     * 每个账户名下的净流水（收入加、支出减）+ 笔数，全时段。
+     * 当前余额 = account.initialCents + netCents，所以删改账单会自动反映，无需补偿。
+     */
+    @Query(
+        """
+        SELECT t.accountId AS accountId,
+               COALESCE(SUM(CASE WHEN t.type = 1 THEN t.amountCents ELSE -t.amountCents END), 0) AS netCents,
+               COUNT(*) AS count
+        FROM `transaction` t
+        GROUP BY t.accountId
+        """
+    )
+    fun observeAccountNet(): Flow<List<AccountNet>>
+
+    /** 每个账户在区间内的收入 / 支出，账户统计页的「本月」两列。 */
+    @Query(
+        """
+        SELECT t.accountId AS accountId,
+               COALESCE(SUM(CASE WHEN t.type = 0 THEN t.amountCents ELSE 0 END), 0) AS expenseCents,
+               COALESCE(SUM(CASE WHEN t.type = 1 THEN t.amountCents ELSE 0 END), 0) AS incomeCents,
+               COUNT(*) AS count
+        FROM `transaction` t
+        WHERE t.dateMillis >= :startMillis AND t.dateMillis < :endMillis
+        GROUP BY t.accountId
+        """
+    )
+    fun observeAccountPeriodStats(startMillis: Long, endMillis: Long): Flow<List<AccountPeriodStat>>
+
+    /** 删账户前先看它名下有没有账单。 */
+    @Query("SELECT COUNT(*) FROM `transaction` WHERE accountId = :accountId")
+    suspend fun countTransactionsInAccount(accountId: Long): Int
+
+    /** 把一个账户名下的账单转移到另一个账户（删账户前的转移）。 */
+    @Query("UPDATE `transaction` SET accountId = :toAccountId WHERE accountId = :fromAccountId")
+    suspend fun moveTransactionsToAccount(fromAccountId: Long, toAccountId: Long)
 }
 
 data class DateBounds(val minAt: Long?, val maxAt: Long?)
+
+/** 某个账户名下的净流水：收入记正、支出记负（单位「分」） */
+data class AccountNet(
+    val accountId: Long,
+    val netCents: Long,
+    val count: Int
+)
+
+/** 某个账户在区间内的收入 / 支出（都是正数，单位「分」） */
+data class AccountPeriodStat(
+    val accountId: Long,
+    val expenseCents: Long,
+    val incomeCents: Long,
+    val count: Int
+)
+
+@Dao
+interface AccountDao {
+
+    @Insert
+    suspend fun insert(account: AccountEntity): Long
+
+    @Update
+    suspend fun update(account: AccountEntity)
+
+    @Query("DELETE FROM account WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("SELECT * FROM account ORDER BY sortOrder ASC, id ASC")
+    fun observeAll(): Flow<List<AccountEntity>>
+
+    @Query("SELECT * FROM account ORDER BY sortOrder ASC, id ASC")
+    suspend fun getAllOnce(): List<AccountEntity>
+
+    @Query("SELECT COUNT(*) FROM account")
+    suspend fun count(): Int
+
+    @Query("DELETE FROM account")
+    suspend fun clearAll()
+}
 
 @Dao
 interface CategoryDao {

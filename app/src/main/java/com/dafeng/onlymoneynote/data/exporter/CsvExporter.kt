@@ -9,8 +9,8 @@ import java.util.Locale
  * 把账单导出成 CSV，给 Excel / 其他记账软件看。
  *
  * 表头跟 [com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter] 对齐：
- * `日期, 一级分类, 二级分类, 收支, 金额, 备注, 报销`
- * 前五列导入器都认（`一级分类` 是新增的多余列，会被忽略），所以导出的文件能原样再导回本 App。
+ * `日期, 一级分类, 二级分类, 收支, 金额, 备注, 报销, 账户`
+ * 导出的文件能原样再导回本 App（账户按名字匹配现有账户，认不出来归「未指定」）。
  *
  * **一级、二级分成两列**，方便在 Excel 里做透视表或按大类汇总。
  * 账单直接挂在一级上（没选二级）时，二级列留空。
@@ -19,7 +19,7 @@ import java.util.Locale
  */
 object CsvExporter {
 
-    private const val HEADER = "日期,一级分类,二级分类,收支,金额,备注,报销"
+    private const val HEADER = "日期,一级分类,二级分类,收支,金额,备注,报销,账户"
     private const val BOM = "\uFEFF"
 
     private val dateFmt = ThreadLocal.withInitial {
@@ -39,7 +39,8 @@ object CsvExporter {
             sb.append(if (r.type == TxType.INCOME.value) "收入" else "支出").append(',')
             sb.append(yuan(r.amountCents)).append(',')
             sb.append(esc(r.note)).append(',')
-            sb.append(if (r.reimbursed) "是" else "").append('\n')
+            sb.append(if (r.reimbursed) "是" else "").append(',')
+            sb.append(esc(r.accountName)).append('\n')
         }
         return sb.toString()
     }

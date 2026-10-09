@@ -105,7 +105,9 @@ fun TransactionListScreen(
     onOpenBackup: () -> Unit,
     onOpenIo: () -> Unit,
     onOpenTheme: () -> Unit,
-    onOpenAbout: () -> Unit
+    onOpenAbout: () -> Unit,
+    /** 结余行右侧「账户」链接 → 账户统计弹层 */
+    onOpenAccounts: () -> Unit
 ) {
     var openedId by remember { mutableStateOf<Long?>(null) }
     val balance = monthIncome - monthExpense
@@ -303,6 +305,8 @@ fun TransactionListScreen(
                         // 报销后面备注笔数，一眼知道有没有待处理的
                         if (reimburseCount > 0) "报销 · $reimburseCount 笔" else "报销"
                     ) { onOpenReimburse() }
+                    Spacer(Modifier.width(7.dp))
+                    HeaderLink("账户") { onOpenAccounts() }
                 }
 
                 // 筛选生效时：摘要 + 笔数 + 一键清除

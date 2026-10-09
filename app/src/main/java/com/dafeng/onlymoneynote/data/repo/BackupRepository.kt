@@ -1,7 +1,9 @@
 package com.dafeng.onlymoneynote.data.repo
 
+import com.dafeng.onlymoneynote.data.local.AccountEntity
 import com.dafeng.onlymoneynote.data.local.CategoryEntity
 import com.dafeng.onlymoneynote.data.local.TransactionEntity
+import com.dafeng.onlymoneynote.data.remote.BackupAccount
 import com.dafeng.onlymoneynote.data.remote.BackupCategory
 import com.dafeng.onlymoneynote.data.remote.BackupPayload
 import com.dafeng.onlymoneynote.data.remote.BackupSettings
@@ -28,10 +30,11 @@ class BackupRepository @Inject constructor(
     suspend fun buildPayload(deviceName: String): String {
         val categories = ledger.categoriesOnce()
         val transactions = ledger.transactionsOnce()
+        val accounts = ledger.accountsOnce()
         val dav = settings.settingsFlowOnce()
 
         val payload = BackupPayload(
-            version = 3,
+            version = 4,
             exportedAt = System.currentTimeMillis(),
             deviceName = deviceName,
             settings = BackupSettings(
@@ -49,8 +52,14 @@ class BackupRepository @Inject constructor(
                     it.builtIn, it.colorKey, it.type
                 )
             },
+            accounts = accounts.map {
+                BackupAccount(
+                    it.id, it.name, it.iconKey, it.sortOrder,
+                    it.initialCents, it.builtIn, it.colorKey
+                )
+            },
             transactions = transactions.map {
-                BackupTransaction(it.id, it.amountCents, it.type, it.categoryId, it.dateMillis, it.note, it.createdAt, it.reimbursed)
+                BackupTransaction(it.id, it.amountCents, it.type, it.categoryId, it.dateMillis, it.note, it.createdAt, it.reimbursed, it.accountId)
             }
         )
         return json.encodeToString(BackupPayload.serializer(), payload)
@@ -104,6 +113,28 @@ class BackupRepository @Inject constructor(
         ledger.clearTransactions()
         ledger.clearCategories()
 
+        // 账户：v4 备份里有就整套覆盖（期初金额也回来）；老备份没这段就别动本机现有账户
+        if (payload.accounts.isNotEmpty()) {
+            ledger.clearAccounts()
+            for (a in payload.accounts) {
+                ledger.addAccount(
+                    AccountEntity(
+                        id = a.id,
+                        name = a.name,
+                        iconKey = a.iconKey,
+                        sortOrder = a.sortOrder,
+                        initialCents = a.initialCents,
+                        builtIn = a.builtIn,
+                        colorKey = a.colorKey
+                    )
+                )
+            }
+        }
+        val knownAccounts = (
+            if (payload.accounts.isNotEmpty()) payload.accounts.map { it.id }
+            else ledger.accountsOnce().map { it.id }
+            ).toSet()
+
         for (c in cats) {
             ledger.addCategory(
                 CategoryEntity(
@@ -128,7 +159,10 @@ class BackupRepository @Inject constructor(
                     dateMillis = t.dateMillis,
                     note = t.note,
                     createdAt = t.createdAt,
-                    reimbursed = t.reimbursed
+                    reimbursed = t.reimbursed,
+                    // 备份里指向一个已经不存在的账户时兜底归「未指定」，不留野指针
+                    accountId = if (t.accountId in knownAccounts) t.accountId
+                    else AccountEntity.UNSPECIFIED_ID
                 )
             )
         }
@@ -150,7 +184,9 @@ class BackupRepository @Inject constructor(
         if (s.appTitle.isNotBlank() && s.appTitle != app.appTitle) settings.saveAppTitle(s.appTitle)
 
         return Result.success(
-            "恢复成功：${payload.categories.size} 个分类，${payload.transactions.size} 笔账单，设置已同步"
+            "恢复成功：${payload.categories.size} 个分类，${payload.transactions.size} 笔账单" +
+                (if (payload.accounts.isNotEmpty()) "，${payload.accounts.size} 个账户" else "") +
+                "，设置已同步"
         )
     }
 

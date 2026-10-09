@@ -36,7 +36,9 @@ object RecordsCsvImporter {
         val cents: Long,
         val note: String,
         /** 「报销」列：是 / 1 / Y / true 都算选中 */
-        val reimbursed: Boolean = false
+        val reimbursed: Boolean = false,
+        /** 「账户」列的账户名；空 = 没写，导入时归「未指定」 */
+        val accountName: String = ""
     )
 
     data class Child(val name: String, val iconKey: String)
@@ -56,7 +58,8 @@ object RecordsCsvImporter {
         val cents: Long,
         val dateMillis: Long,
         val note: String,
-        val reimbursed: Boolean = false
+        val reimbursed: Boolean = false,
+        val accountName: String = ""
     )
 
     data class Plan(val parents: List<Parent>, val txs: List<Tx>) {
@@ -147,6 +150,9 @@ object RecordsCsvImporter {
         val iAmount = header.indexOf("金额")
         val iNote = header.indexOf("备注")
         val iReimb = header.indexOf("报销")
+        // 「账户」列：本 App v5 起会导出；大象记账那种表头也有这一列，
+        // 但按名字对不上本机账户时会归「未指定」，不会凭空建账户。
+        val iAccount = header.indexOf("账户")
         // 分类列有两种表头：大象记账的单列「分类名称」，
         // 以及本 App 导出的双列「一级分类 / 二级分类」。二级优先，没有就退到一级。
         val iCatSingle = header.indexOf("分类名称")
@@ -168,7 +174,7 @@ object RecordsCsvImporter {
             val date = toMillis(at(iDate)) ?: return@forEach
             val cat = at(iCatL2).ifBlank { at(iCatSingle) }.ifBlank { at(iCatL1) }.ifBlank { "其他" }
             val reimb = at(iReimb).lowercase() in setOf("是", "1", "y", "yes", "true", "✓")
-            out.add(RawRow(date, cat, type, cents, at(iNote), reimb))
+            out.add(RawRow(date, cat, type, cents, at(iNote), reimb, at(iAccount)))
         }
         return out
     }
@@ -310,7 +316,8 @@ object RecordsCsvImporter {
                 cents = r.cents,
                 dateMillis = r.dateMillis,
                 note = r.note,
-                reimbursed = r.reimbursed
+                reimbursed = r.reimbursed,
+                accountName = r.accountName
             )
         }
         // 兜底一级本身可能不在 parents 里（比如映射表里那个一级一个已知二级都没命中）
