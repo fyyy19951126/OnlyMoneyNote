@@ -225,13 +225,25 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.runtime.Composable
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.layout.Box
 
 /**
@@ -701,11 +713,20 @@ fun CategoryIcon(
     modifier: Modifier = Modifier,
     tint: Color = LocalContentColor.current
 ) {
-    if (iconKey.startsWith("emoji:")) {
+    if (iconKey.startsWith("brand:")) {
+        BrandMark(kind = iconKey.removePrefix("brand:"), size = size, modifier = modifier)
+    } else if (iconKey.startsWith("emoji:")) {
         Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
             Text(
                 text = iconKey.removePrefix("emoji:"),
                 fontSize = (size.value * 0.72f).sp,
+                // 默认的字形上下留白（ascent/descent padding）会把字形整体往下推，
+                // 在固定尺寸的色块里看着就是「不居中、靠下」。关掉内边距并按字号给行高，
+                // 汉字图标（工 / 招 / 支）才真正落在块正中。
+                lineHeight = (size.value * 0.72f).sp,
+                style = TextStyle(
+                    platformStyle = PlatformTextStyle(includeFontPadding = false)
+                ),
                 // 彩色 emoji 字形不吃颜色；「工 / 招」这类汉字图标要靠 tint 才看得清
                 color = tint,
                 textAlign = TextAlign.Center,
@@ -719,5 +740,69 @@ fun CategoryIcon(
             modifier = modifier.size(size),
             tint = tint
         )
+    }
+}
+
+/**
+ * 手绘的品牌近似标（目前只有微信）。
+ *
+ * 2026-10-09 用户问「微信的图标能不能找到官方的呢，不行你就画一个」——
+ * 官方 logo 是腾讯的注册商标美术作品，抓进公开仓库既有版权风险也不合适，
+ * 所以这里用 Canvas 画「两个对话气泡 + 眼睛挖空」的简化形，配色取微信绿 #07C160。
+ * 底色由本函数自己画，[com.dafeng.onlymoneynote.ui.components.IconTile] 遇到
+ * `brand:` 前缀时不再叠加色块。
+ */
+@Composable
+fun BrandMark(kind: String, size: Dp, modifier: Modifier = Modifier) {
+    val bg = when (kind) {
+        "wechat" -> Color(0xFF07C160)
+        else -> Color(0xFF8A8F99)
+    }
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(RoundedCornerShape(size * 0.28f))
+            .background(bg),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(size * 0.78f)) {
+            val w = this.size.width
+            val h = this.size.height
+            when (kind) {
+                "wechat" -> {
+                    // 后侧小气泡（右上）
+                    drawRoundRect(
+                        color = Color.White,
+                        topLeft = Offset(w * 0.40f, h * 0.02f),
+                        size = Size(w * 0.58f, h * 0.46f),
+                        cornerRadius = CornerRadius(w * 0.22f)
+                    )
+                    // 前侧大气泡（左下）
+                    drawRoundRect(
+                        color = Color.White,
+                        topLeft = Offset(w * 0.02f, h * 0.30f),
+                        size = Size(w * 0.70f, h * 0.52f),
+                        cornerRadius = CornerRadius(w * 0.25f)
+                    )
+                    // 大气泡左下的小尾巴
+                    drawPath(
+                        Path().apply {
+                            moveTo(w * 0.18f, h * 0.76f)
+                            lineTo(w * 0.04f, h * 1.00f)
+                            lineTo(w * 0.36f, h * 0.82f)
+                            close()
+                        },
+                        color = Color.White
+                    )
+                    // 四个眼睛用底色挖空，才有「气泡脸」的感觉
+                    listOf(
+                        0.26f to 0.54f, 0.50f to 0.54f,
+                        0.58f to 0.24f, 0.80f to 0.24f
+                    ).forEach { (x, y) ->
+                        drawCircle(color = bg, center = Offset(w * x, h * y), radius = w * 0.058f)
+                    }
+                }
+            }
+        }
     }
 }

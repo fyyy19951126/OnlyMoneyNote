@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -58,6 +59,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -263,7 +265,7 @@ fun TransactionListScreen(
                         )
                         HeaderEntry(Icons.Outlined.Category, "分类管理") { onOpenCategory() }
                         HeaderEntry(Icons.Outlined.Cloud, "云端备份") { onOpenBackup() }
-                        HeaderEntry(Icons.Outlined.UploadFile, "导入导出") { onOpenIo() }
+                        HeaderEntry(Icons.Outlined.UploadFile, "本地备份") { onOpenIo() }
                         HeaderEntry(Icons.Outlined.Palette, "主题外观") { onOpenTheme() }
                         // 2026-10-09 用户新要求：去掉红点，更新提示只保留在「关于」的版本号行
                         HeaderEntry(Icons.Outlined.Info, "关于") { onOpenAbout() }
@@ -310,10 +312,7 @@ fun TransactionListScreen(
                     Spacer(Modifier.width(7.dp))
                     HeaderLink("统计") { onOpenStats() }
                     Spacer(Modifier.width(7.dp))
-                    HeaderLink(
-                        // 报销后面备注笔数，一眼知道有没有待处理的
-                        if (reimburseCount > 0) "报销 · $reimburseCount 笔" else "报销"
-                    ) { onOpenReimburse() }
+                    HeaderLink("报销") { onOpenReimburse() }
                     Spacer(Modifier.width(7.dp))
                     HeaderLink("账户") { onOpenAccounts() }
                 }
@@ -741,19 +740,23 @@ private fun TxRow(
             }
         }
         Spacer(Modifier.width(8.dp))
-        // 这笔钱走的账户，放在金额左侧
-        Text(
-            text = tx.accountName,
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1
-        )
-        Spacer(Modifier.width(7.dp))
         Text(
             text = (if (isExpense) "-¥" else "+¥") + LedgerViewModel.formatCents(tx.amountCents),
+            // 金额右对齐并预留固定宽度：位数不同也不会把右边的账户头像推得左右跳
+            modifier = Modifier.widthIn(min = 104.dp),
+            textAlign = TextAlign.End,
+            maxLines = 1,
             color = color,
             fontWeight = FontWeight.Bold,
             fontSize = 15.sp
+        )
+        Spacer(Modifier.width(8.dp))
+        // 账户头像放金额右边，整列靠齐
+        IconTile(
+            iconKey = tx.accountIconKey,
+            size = 22.dp,
+            cornerRadius = 7.dp,
+            overrideColor = AppIcons.colorFromKey(tx.accountColorKey)
         )
     }
 }

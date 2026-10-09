@@ -387,14 +387,18 @@ fun IconTile(
     overrideColor: Color? = null
 ) {
     val isEmoji = iconKey.startsWith("emoji:")
+    // brand: 前缀的图形自己带底色和圆角，这里再套一层色块会露边
+    val isBrand = iconKey.startsWith("brand:")
     val bg = overrideColor
         ?: if (isEmoji) MaterialTheme.colorScheme.surfaceVariant
         else AppIcons.categoryTileColor(iconKey)
     Box(
         modifier = modifier
             .size(size)
-            .clip(RoundedCornerShape(cornerRadius))
-            .background(bg),
+            .then(
+                if (isBrand) Modifier
+                else Modifier.clip(RoundedCornerShape(cornerRadius)).background(bg)
+            ),
         contentAlignment = Alignment.Center
     ) {
         CategoryIcon(
@@ -466,6 +470,39 @@ fun PageHeader(
 /* ------------------------------------------------------------------ */
 /* 二级页顶栏                                                          */
 /* ------------------------------------------------------------------ */
+
+/**
+ * 二级页的**主题色**页头：返回箭头在左、标题居中，下面放这一页的重点信息。
+ *
+ * 统计 / 报销 / 分类管理 / 云端备份 / 导入导出 / 账户 全用它 —— 白顶栏（[OverlayTopBar]）
+ * 跟首页的蓝色页头接在一起没有层次，用户要求统一成主题色顶、标题居中。
+ */
+@Composable
+fun OverlayPageHeader(
+    title: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit = {}
+) {
+    PageHeader(modifier = modifier) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .padding(horizontal = 6.dp)
+        ) {
+            HeaderBackButton(onBack = onBack, modifier = Modifier.align(Alignment.CenterStart))
+            Text(
+                title,
+                modifier = Modifier.align(Alignment.Center),
+                fontSize = 19.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White
+            )
+        }
+        content()
+    }
+}
 
 /** 二级页白底顶栏：左返回箭头、标题居中加粗，支付宝二级页样式 */
 @Composable

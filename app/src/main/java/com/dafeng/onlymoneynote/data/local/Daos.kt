@@ -26,7 +26,10 @@ data class TxWithCategory(
     val parentIconKey: String = "more_horiz",
     /** 资金账户 id + 名称（编辑账单时要带回原账户，列表里也要显示） */
     val accountId: Long = AccountEntity.UNSPECIFIED_ID,
-    val accountName: String = AccountEntity.UNSPECIFIED_NAME
+    val accountName: String = AccountEntity.UNSPECIFIED_NAME,
+    /** 账户头像：列表里金额左边画这个小图标，不带名字 */
+    val accountIconKey: String = "emoji:💳",
+    val accountColorKey: String = ""
 )
 
 /** 报销汇总：按收支类型分组的报销金额 + 笔数 */
@@ -173,7 +176,9 @@ interface TransactionDao {
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
                t.accountId AS accountId,
-               COALESCE(a.name, '未指定') AS accountName
+               COALESCE(a.name, '未指定') AS accountName,
+               COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
+               COALESCE(a.colorKey, '') AS accountColorKey
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId
@@ -241,7 +246,9 @@ interface TransactionDao {
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
                t.accountId AS accountId,
-               COALESCE(a.name, '未指定') AS accountName
+               COALESCE(a.name, '未指定') AS accountName,
+               COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
+               COALESCE(a.colorKey, '') AS accountColorKey
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId
@@ -285,7 +292,9 @@ interface TransactionDao {
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
                t.accountId AS accountId,
-               COALESCE(a.name, '未指定') AS accountName
+               COALESCE(a.name, '未指定') AS accountName,
+               COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
+               COALESCE(a.colorKey, '') AS accountColorKey
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId

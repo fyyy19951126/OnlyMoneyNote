@@ -46,9 +46,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.dafeng.onlymoneynote.data.local.TxWithCategory
 import com.dafeng.onlymoneynote.data.ocr.OcrEngine
 import com.dafeng.onlymoneynote.ui.LedgerViewModel
+import com.dafeng.onlymoneynote.ui.components.OverlayPageHeader
 import com.dafeng.onlymoneynote.ui.components.OverlayTopBar
 import com.dafeng.onlymoneynote.ui.components.SheetDialog
 import com.dafeng.onlymoneynote.ui.screens.AccountStatsSheet
+import com.dafeng.onlymoneynote.ui.screens.AccountTotalCard
 import com.dafeng.onlymoneynote.ui.screens.AddTransactionScreen
 import com.dafeng.onlymoneynote.ui.screens.CategoryScreen
 import com.dafeng.onlymoneynote.ui.screens.AboutDialog
@@ -239,7 +241,7 @@ private fun AppRoot(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
                 ) {
-                    OverlayTopBar(title = "分类管理", onBack = { stack = stack.dropLast(1) })
+                    OverlayPageHeader(title = "分类管理", onBack = { stack = stack.dropLast(1) })
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -262,7 +264,7 @@ private fun AppRoot(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
                 ) {
-                    OverlayTopBar(title = "云端备份", onBack = { stack = stack.dropLast(1) })
+                    OverlayPageHeader(title = "云端备份", onBack = { stack = stack.dropLast(1) })
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -277,7 +279,7 @@ private fun AppRoot(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
                 ) {
-                    OverlayTopBar(title = "导入导出", onBack = { stack = stack.dropLast(1) })
+                    OverlayPageHeader(title = "本地备份", onBack = { stack = stack.dropLast(1) })
                     ImportExportSheet(
                         txCount = transactions.size,
                         categoryCount = categories.size,
@@ -294,7 +296,13 @@ private fun AppRoot(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
                 ) {
-                    OverlayTopBar(title = "账户", onBack = { stack = stack.dropLast(1) })
+                    OverlayPageHeader(
+                        title = "账户",
+                        onBack = { stack = stack.dropLast(1) }
+                    ) {
+                        // 重点信息（总资产）放进主题色里，下面的账户明细走白底
+                        AccountTotalCard(accountOverviews.sumOf { it.balanceCents })
+                    }
                     AccountStatsSheet(
                         overviews = accountOverviews,
                         onAdd = vm::addAccount,

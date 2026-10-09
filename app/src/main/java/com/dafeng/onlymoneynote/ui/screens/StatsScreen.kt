@@ -57,7 +57,7 @@ import com.dafeng.onlymoneynote.data.local.TxWithCategory
 import com.dafeng.onlymoneynote.ui.LedgerViewModel
 import com.dafeng.onlymoneynote.ui.components.IconTile
 import com.dafeng.onlymoneynote.ui.components.HeaderBackButton
-import com.dafeng.onlymoneynote.ui.components.PageHeader
+import com.dafeng.onlymoneynote.ui.components.OverlayPageHeader
 import com.dafeng.onlymoneynote.ui.theme.AppTheme
 import com.dafeng.onlymoneynote.util.AppIcons
 import android.graphics.Paint
@@ -136,14 +136,11 @@ fun StatsScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        /* ---------- 蓝色渐变页头：大数字 + 区间切换 ---------- */
-        PageHeader {
+        /* ---------- 主题色页头：标题居中 + 大数字 + 区间切换 ---------- */
+        OverlayPageHeader(title = "统计", onBack = onBack) {
             Column(
-                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp)
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 0.dp, bottom = 24.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    HeaderBackButton(label = "统计", onBack = onBack)
-                }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
                     HeaderStat(

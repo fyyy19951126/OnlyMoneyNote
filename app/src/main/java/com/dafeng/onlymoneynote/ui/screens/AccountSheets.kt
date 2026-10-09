@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,7 +27,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -79,65 +84,21 @@ fun AccountStatsSheet(
     onUpdate: (id: Long, name: String, iconKey: String, initialYuan: String, colorKey: String) -> Unit,
     onDelete: (Long) -> Unit
 ) {
-    val totalCents = overviews.sumOf { it.balanceCents }
     // null = 没开；AccountEntity = 编辑已有；NEW 哨兵 = 新建
     var editing by remember { mutableStateOf<Any?>(null) }
 
-    // 2026-10-09 用户确认：「分类管理、webdav备份、导入导出、以及账户功能，都改成统计页面
-    // 一样左上角带返回的界面，不要弹出框」。标题与返回由外层 OverlayTopBar 画，这里只留内容。
-    Column(
+    // 2026-10-09 用户确认：账户改成统计页那样左上角带返回的整页。标题、口径说明和总资产
+    // 都在外层 OverlayPageHeader 的主题色里，这里只留白色区的账户列表 + 右下角新建按钮
+    // （新建按钮跟分类管理一样用 FloatingActionButton，用户要求统一风格）。
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                // 标题由外层 OverlayTopBar 画，这里只留一行口径说明
-                Text(
-                    "余额 = 期初金额 + 该账户名下的收支流水",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(AppTheme.primary.copy(alpha = 0.10f))
-                    .clickable { editing = NEW },
-                contentAlignment = Alignment.Center
-            ) {
-                Text("＋", fontSize = 20.sp, fontWeight = FontWeight.Medium, color = AppTheme.primary)
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-        // 总资产：单独一块，跟下面的账户行拉开层级
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(AppTheme.primary.copy(alpha = 0.08f))
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("总资产", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.weight(1f))
-            Text(
-                (if (totalCents < 0) "-" else "") + "¥" + LedgerViewModel.formatCents(abs(totalCents)),
-                fontSize = 21.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = AppTheme.primary
-            )
-        }
-
+        Column(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 8.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
             items(overviews, key = { it.account.id }) { o ->
@@ -146,7 +107,7 @@ fun AccountStatsSheet(
             if (overviews.isEmpty()) {
                 item {
                     Text(
-                        "还没有账户，点右上角 ＋ 加一个",
+                        "还没有账户，点右下角 ＋ 加一个",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 20.dp)
@@ -155,13 +116,27 @@ fun AccountStatsSheet(
             }
         }
 
-        Text(
-            "长按账户可编辑或删除",
-            fontSize = 11.5.sp,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
-        )
+            Text(
+                "长按账户可编辑或删除",
+                fontSize = 11.5.sp,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
+            )
+        }
+
+        FloatingActionButton(
+            onClick = { editing = NEW },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 20.dp, bottom = 24.dp),
+            containerColor = AppTheme.primary,
+            contentColor = Color.White,
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Icon(Icons.Outlined.Add, contentDescription = "新建账户")
+        }
     }
 
     val target = editing
@@ -191,6 +166,31 @@ fun AccountStatsSheet(
 
 /** 新建时传给 editing 的哨兵值 */
 private val NEW = Any()
+
+/**
+ * 账户页主题色页头里的「现有资产总额」。
+ *
+ * 用户要求：重点信息（总资产）放在主题色里，其余账户明细留在下面白色区。
+ */
+@Composable
+fun AccountTotalCard(totalCents: Long) {
+    Column(
+        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 22.dp)
+    ) {
+        Text(
+            "现有资产总额",
+            fontSize = 12.5.sp,
+            color = Color.White.copy(alpha = 0.75f)
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            (if (totalCents < 0) "-¥" else "¥") + LedgerViewModel.formatCents(abs(totalCents)),
+            fontSize = 26.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -293,50 +293,6 @@ private fun AccountEditDialog(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(Modifier.height(10.dp))
-                // 图标：20 个预设（微信、支付宝 + 8 个主要银行 + 10 个不同颜色的钱包），
-                // 点一下就同时定好图标和配色
-                Text("图标", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AccountIconPresets.PRESETS.forEach { p ->
-                        val sel = icon == p.iconKey && colorKey == p.colorKey
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .then(
-                                    if (sel) Modifier.border(
-                                        2.dp, AppTheme.primary, RoundedCornerShape(12.dp)
-                                    ) else Modifier
-                                )
-                                .clickable {
-                                    icon = p.iconKey
-                                    colorKey = p.colorKey
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            IconTile(
-                                iconKey = p.iconKey, size = 34.dp, cornerRadius = 10.dp,
-                                overrideColor = AppIcons.colorFromKey(p.colorKey)
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                Text("配色", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // 第一格 = 不指定（跟随图标默认分组色）
-                    ColorDot(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        selected = colorKey.isEmpty(),
-                        onClick = { colorKey = "" }
-                    )
-                    AppIcons.CategoryPalette.forEach { c ->
-                        ColorDot(color = c, selected = colorKey == toHex(c), onClick = { colorKey = toHex(c) })
-                    }
-                }
                 Spacer(Modifier.height(12.dp))
                 // 金额口径二选一：期初金额 / 此刻余额
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -362,6 +318,77 @@ private fun AccountEditDialog(
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                /* ---------- 以下置底：图标 + 配色 ---------- */
+                Spacer(Modifier.height(16.dp))
+                Text("图标", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                // 预设：微信 / 支付宝 / 抖音 + 20 家常用银行，点一下就同时定好图标和配色
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    AccountIconPresets.PRESETS.forEach { p ->
+                        val sel = icon == p.iconKey && colorKey == p.colorKey
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(RoundedCornerShape(13.dp))
+                                .then(
+                                    if (sel) Modifier.border(
+                                        2.dp, AppTheme.primary, RoundedCornerShape(13.dp)
+                                    ) else Modifier
+                                )
+                                .clickable {
+                                    icon = p.iconKey
+                                    colorKey = p.colorKey
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            IconTile(
+                                iconKey = p.iconKey, size = 38.dp, cornerRadius = 11.dp,
+                                overrideColor = AppIcons.colorFromKey(p.colorKey)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                // 自定义：打一个汉字 / 词 / emoji 当图标（左边是实时预览）
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconTile(
+                        iconKey = icon, size = 38.dp, cornerRadius = 11.dp,
+                        overrideColor = AppIcons.colorFromKey(colorKey)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    OutlinedTextField(
+                        value = if (icon.startsWith("emoji:")) icon.removePrefix("emoji:") else "",
+                        onValueChange = { t ->
+                            val e = firstGlyph(t)
+                            icon = if (e.isNotEmpty()) "emoji:$e" else AccountIconPresets.PRESETS[0].iconKey
+                        },
+                        label = { Text("自定义图标（文字或 emoji）") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Text("配色", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // 第一格 = 不指定（跟随图标默认分组色）
+                    ColorDot(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        selected = colorKey.isEmpty(),
+                        onClick = { colorKey = "" }
+                    )
+                    AppIcons.CategoryPalette.forEach { c ->
+                        ColorDot(color = c, selected = colorKey == toHex(c), onClick = { colorKey = toHex(c) })
+                    }
+                }
             }
         },
         confirmButton = {
@@ -387,7 +414,7 @@ private fun AccountEditDialog(
 private fun ColorDot(color: Color, selected: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(28.dp)
+            .size(34.dp)
             .clip(RoundedCornerShape(9.dp))
             .background(color)
             .then(
@@ -425,8 +452,25 @@ private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
     )
 }
 
-/** "1234.56" → 分；空/非法返回 null。负数照收（信用卡欠款） */
-private fun parseYuanToCents(text: String): Long? {
+/**
+ * 取输入里的第一个字形：连变体选择符（U+FE0F）、ZWJ、肤色修饰符一起吃进来。
+ * 自定义图标框用它，避免把代理对切一半（切坏了就渲染成一个方框）。
+ */
+private fun firstGlyph(text: String): String {
+    val s = text.trim()
+    if (s.isEmpty()) return ""
+    var end = Character.charCount(Character.codePointAt(s, 0))
+    while (end < s.length) {
+        val cp = Character.codePointAt(s, end)
+        val glue = cp == 0xFE0E || cp == 0xFE0F || cp == 0x200D || cp in 0x1F3FB..0x1F3FF
+        if (!glue) break
+        end += Character.charCount(cp)
+        if (cp == 0x200D && end < s.length) end += Character.charCount(Character.codePointAt(s, end))
+    }
+    return s.substring(0, end)
+}
+
+/** "1234.56" → 分；空/非法返回 null。负数照收（信用卡欠款） */private fun parseYuanToCents(text: String): Long? {
     val t = text.trim().replace(",", "").replace("¥", "")
     if (t.isEmpty() || t == "-" || t == "." || t == "-.") return null
     return t.toBigDecimalOrNull()

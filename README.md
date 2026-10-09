@@ -1,11 +1,7 @@
 # OnlyMoneyNote（记账本）
 
-> 工程目录：`D:\dev\app`（2026-10-03 从 `D:\WorkBuddy\2026-10-01-22-28-56\MoneyNote` 整体迁过来）。
-> 桌面显示名、默认主页标题、APK 产物名都是 **OnlyMoneyNote**；
-> 包名/applicationId 仍是 `com.dafeng.moneynote` —— 改了等于换了一个 App，已装机和账单数据不再被识别。
-
-安卓记账 App。Kotlin + Jetpack Compose + Room + Hilt，原生开发，不引第三方 UI 库。
-界面按**支付宝 12.x（蚂蚁蓝）的设计语言**整体改版：#1677FF 主色、灰底白卡片、彩色分类图标块、固定底栏。
+安卓记账 App。Kotlin + Jetpack Compose + Room + Hilt，原生开发，不引第三方 UI 库。  
+界面按**支付宝的设计语言**整体改版：#1677FF 主色、灰底白卡片、彩色分类图标块、固定底栏。
 
 ## 功能
 
@@ -34,23 +30,17 @@
 └──────────────────────────────────┘
 ```
 
-- 底栏 4 个 Tab + 中间蓝色「＋」直接记一笔；「我的」页承载设置
-- 「分类管理」「云端备份」是我的页里的二级页（白底顶栏 + 居中标题 + 返回箭头）
-- 「导入导出」「主题」「关于」从我的页弹出
-- 返回键逐层退回（弹层 → 二级页 → 非账单 Tab 退回账单），退无可退才退出 App
-- 分类图标按组配固定颜色（餐饮橙/交通蓝/购物红/居住绿…），全 App 一致
-
 ## 环境要求
 
-| 项 | 版本 |
-|---|---|
-| JDK | 21（`D:\dev\jdk-21`） |
-| Android SDK | platform-tools 37.0.1 / build-tools 36.0.0 / platforms;android-36 |
-| Gradle | 8.9 |
-| Kotlin | 2.0.21 |
-| AGP | 8.6.1 |
-| ML Kit | text-recognition 16.0.1（本地离线 OCR） |
-| minSdk / targetSdk | 26 / 36 |
+| 项                  | 版本                                                                |
+| ------------------ | ----------------------------------------------------------------- |
+| JDK                | 21（`D:\dev\jdk-21`）                                               |
+| Android SDK        | platform-tools 37.0.1 / build-tools 36.0.0 / platforms;android-36 |
+| Gradle             | 8.9                                                               |
+| Kotlin             | 2.0.21                                                            |
+| AGP                | 8.6.1                                                             |
+| ML Kit             | text-recognition 16.0.1（本地离线 OCR）                                 |
+| minSdk / targetSdk | 26 / 36                                                           |
 
 ## 构建
 
@@ -84,18 +74,18 @@ adb shell "pm install -r /data/local/tmp/moneynote.apk"
 adb shell "am start -n com.dafeng.moneynote/.MainActivity"
 ```
 
-⚠️ **努比亚等国产 ROM 对 `adb install` 有限制**（报 `Caller has no access to session -1`），
+⚠️ **努比亚等国产 ROM 对 `adb install` 有限制**（报 `Caller has no access to session -1`），  
 必须走 `push + pm install` 这条老路。
 
-⚠️ **`adb shell input tap` 在真机上不可靠**，经常被识别成滑动，甚至点到别的 App 上。
+⚠️ **`adb shell input tap` 在真机上不可靠**，经常被识别成滑动，甚至点到别的 App 上。  
 要做交互验证，优先写单元测试；坐标点击只用来粗略截图。
 
 ## 代码结构
 
 ```
-app/src/main/java/com/dafeng/moneynote/
-├── MoneyNoteApp.kt          # @HiltAndroidApp
-├── MainActivity.kt          # 入口 + 导航状态机（底栏 2 项 / 顶栏 2 个二级页 / 记账弹层）
+app/src/main/java/com/dafeng/onlymoneynote/
+├── OnlyMoneyNoteApp.kt      # @HiltAndroidApp
+├── MainActivity.kt          # 入口 + 导航状态机（顶栏 5 个图标 → 分类管理 / 云端备份 / 本地备份 / 账户 等整页；记一笔仍是底部弹层）
 ├── data/
 │   ├── local/               # Room：实体 / DAO / Database / 默认分类种子
 │   ├── ocr/                 # OcrEngine（ML Kit 本地识别） + ReceiptParser（文本→账单要素）
@@ -106,7 +96,7 @@ app/src/main/java/com/dafeng/moneynote/
 │   ├── LedgerViewModel.kt   # 统一管所有状态（含统计区间、OCR、分类编辑）
 │   ├── components/          # AlipayUi：白色底栏(蓝＋) / 蓝色页头 / 彩色图标块 / 二级页顶栏
 │   ├── theme/Theme.kt       # 默认蚂蚁蓝 #1677FF；支出绿 / 收入红（中国习惯）
-│   └── screens/             # 记账弹层 / 账单列表 / 统计 / 报销 / 我的 / 分类管理 / WebDAV 设置
+│   └── screens/             # 记账弹层 / 账单列表 / 统计（分类·明细·账户）/ 报销 / 分类管理 / WebDAV 设置 / 本地备份 / 账户页
 └── util/AppIcons.kt         # 图标 key → Material 图标 映射 + 分类组配色
 
 app/src/test/java/com/dafeng/moneynote/data/ocr/
@@ -126,45 +116,43 @@ app/src/test/java/com/dafeng/moneynote/data/ocr/
 
 **页头渐变、底栏、彩色图标块全部是静态绘制。**
 
-不用 `Modifier.blur()`——RenderEffect 模糊在滚动时每帧都要重新渲染，中低端机必掉帧。
+不用 `Modifier.blur()`——RenderEffect 模糊在滚动时每帧都要重新渲染，中低端机必掉帧。  
 页头就是一层渐变背景，底栏白底 + 发丝线，没有逐帧动画和模糊。
 
-同理，列表页的分组（`groupBy`）用 `remember(transactions)` 缓存，避免每次重组重算；
+同理，列表页的分组（`groupBy`）用 `remember(transactions)` 缓存，避免每次重组重算；  
 每日小计用一次 `forEach` 累加，不用 `filter().sumOf()` 扫两遍。
 
 ### OCR 解析策略
 
 `ReceiptParser` 的目标是「**宁可少猜，不要瞎猜**」，但金额和时间这两个必须尽力认出来。
 
-1. **先按行过滤噪音**：含「单号 / 卡号 / 账号 / 优惠 / 红包 / 折扣 / 余额」的行整体丢弃，
+1. **先按行过滤噪音**：含「单号 / 卡号 / 账号 / 优惠 / 红包 / 折扣 / 余额」的行整体丢弃，     
    免得把 20 位的交易单号当成金额。
-2. **金额按优先级匹配**三种模式：字段名形式（`金额(元) 42.00`）> 货币符号（`¥55.00`）> 数字+元。
+2. **金额按优先级匹配**三种模式：字段名形式（`金额(元) 42.00`）> 货币符号（`¥55.00`）> 数字+元。     
    同一模式内取最大值（支付页常有「优惠 20」「实付 108」这类干扰）。
 3. **时间优先在含「时间/日期/付款/交易/创建/完成」的行里找**，命中率明显高于全文乱找。
 4. **商户**先按字段名取值（`商户全称 xxx`），其次找带商户后缀的行，最后才兜底猜。
 
 ## 资金账户
 
-`account` 表存账户本身（名字、emoji 图标、配色、排序、`initialCents` 期初金额、`builtIn`）。
-**余额不单独存**：当前余额 = 期初金额 + 该账户名下账单的净流水（收入加、支出减），
-由 `TransactionDao.observeAccountNet()` 现算。所以删账单、改账单、改账户都会自动重算，
+`account` 表存账户本身（名字、emoji 图标、配色、排序、`initialCents` 期初金额、`builtIn`）。  
+**余额不单独存**：当前余额 = 期初金额 + 该账户名下账单的净流水（收入加、支出减），  
+由 `TransactionDao.observeAccountNet()` 现算。所以删账单、改账单、改账户都会自动重算，  
 不需要任何补偿逻辑，也不会出现余额和流水对不上的情况。
 
-- 内置一个不可删的「未指定」账户，`id` 固定 = 1（`AccountEntity.UNSPECIFIED_ID`）：
-  v4→v5 迁移插的就是这一条，全新安装的种子也按这个 id 插，两条路径 id 对得上。
+- 内置一个不可删的「未指定」账户，`id` 固定 = 1（`AccountEntity.UNSPECIFIED_ID`）：    
+  v4→v5 迁移插的就是这一条，全新安装的种子也按这个 id 插，两条路径 id 对得上。    
   迁移时顺带把 6 个建议账户（支付宝 / 微信 / 微信分身 / 工行 / 农行 / 建行）一起插进去。
 - 记一笔里的账户胶囊按**账单笔数**从多到少排，常用的自动排到前面。
 - 删账户（长按 → 删除）时它名下的账单先转移到「未指定」，不留外键孤儿。
-- **v4→v5 迁移**只做三件事：建 `account` 表、给 `transaction` 加 `accountId DEFAULT 1`、建索引。
-  老账单一行的值都不改，全部归「未指定」。
 - 删账户时它名下的账单先转移到「未指定」，不留外键孤儿。
-- 备份 JSON 从 v4 起带 `accounts` 和账单的 `accountId`；恢复时按原 id 重建，
+- 备份 JSON 从 v4 起带 `accounts` 和账单的 `accountId`；恢复时按原 id 重建，    
   账单指向一个已经不存在的账户就兜底归「未指定」。老备份没有账户段 → 沿用本机现有账户。
 - CSV 多一列「账户」。导入按名字匹配本机账户，认不出来归「未指定」（不会顺手造账户）。
 
 ## 检查更新
 
-**App 平时完全不联网**：没有开屏检查、没有红点、没有后台请求。
+**App 平时完全不联网**：没有开屏检查、没有红点、没有后台请求。  
 唯一入口是「关于」里的版本号行 —— 点它才会去拉一次远程 JSON：
 
 - 远程只放一个小 JSON（本仓库 `update/update.json`），格式：`{ "versionName": "1.1", "url": "蓝奏云链接", "note": "更新说明" }`
@@ -192,7 +180,6 @@ keyPassword=……
 
 ## 已知不足
 
-- 没有导出 CSV / Excel。
 - 备份是全量覆盖，没有版本历史。
 - 统计的趋势柱状图是按年/季/月分桶的，不支持自定义区间。
 - OCR 没做源图预览 —— 识别完用户看不到自己选的是哪张图。

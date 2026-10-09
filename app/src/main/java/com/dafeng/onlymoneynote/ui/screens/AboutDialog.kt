@@ -1,5 +1,7 @@
 package com.dafeng.onlymoneynote.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -74,17 +76,25 @@ fun AboutDialog(
                     Spacer(Modifier.width(6.dp))
                     Text(version, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 }
-                Spacer(Modifier.height(16.dp))
-                AboutTip(
-                    "1",
-                    "本软件所有数据均存在本地或自己的 WebDAV，不经过任何第三方服务器。" +
-                        "WebDAV 密码只写进本机设置，不会被打进备份文件。"
-                )
                 Spacer(Modifier.height(12.dp))
-                AboutTip(
-                    "2",
-                    "相册识图记账功能还不完善，识别率一般，正在持续优化中。"
-                )
+                // 源码仓库：点一下用浏览器打开
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { openInBrowser(context, REPO_URL) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("GitHub", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "fyyy19951126/OnlyMoneyNote",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AppTheme.primary
+                    )
+                }
             }
         },
         confirmButton = {
@@ -102,31 +112,15 @@ fun AboutDialog(
 
 /* ------------------------------------------------------------------ */
 
-/** 关于里的一条提示：前面一个圆形序号，后面正文字号小一点、行距松一点 */
-@Composable
-private fun AboutTip(index: String, text: String) {
-    Row(verticalAlignment = Alignment.Top) {
-        Box(
-            modifier = Modifier
-                .size(18.dp)
-                .clip(CircleShape)
-                .background(AppTheme.primary.copy(alpha = 0.12f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                index,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = AppTheme.primary
-            )
-        }
-        Spacer(Modifier.width(9.dp))
-        Text(
-            text,
-            modifier = Modifier.weight(1f),
-            fontSize = 12.5.sp,
-            lineHeight = 19.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+/** 源码仓库地址（关于页那一行点开就是它） */
+private const val REPO_URL = "https://github.com/fyyy19951126/OnlyMoneyNote"
+
+/** 用系统浏览器打开链接；没装浏览器也不能崩 */
+private fun openInBrowser(context: android.content.Context, url: String) {
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }
 }

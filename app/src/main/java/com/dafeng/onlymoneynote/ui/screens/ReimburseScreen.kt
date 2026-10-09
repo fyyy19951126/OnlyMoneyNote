@@ -36,7 +36,7 @@ import com.dafeng.onlymoneynote.data.local.TxWithCategory
 import com.dafeng.onlymoneynote.ui.LedgerViewModel
 import com.dafeng.onlymoneynote.ui.components.HeaderBackButton
 import com.dafeng.onlymoneynote.ui.components.IconTile
-import com.dafeng.onlymoneynote.ui.components.PageHeader
+import com.dafeng.onlymoneynote.ui.components.OverlayPageHeader
 import com.dafeng.onlymoneynote.ui.theme.AppTheme
 
 /**
@@ -70,21 +70,11 @@ fun ReimburseScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        /* ---------- 蓝色渐变页头 ---------- */
-        PageHeader {
+        /* ---------- 主题色页头：标题居中，重点数字在色块里 ---------- */
+        OverlayPageHeader(title = "报销", onBack = onBack) {
             Column(
-                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 26.dp)
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 0.dp, bottom = 26.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    HeaderBackButton(onBack = onBack)
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        "报销",
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                }
                 Spacer(Modifier.height(12.dp))
                 Text(
                     if (pending >= 0) "已收回" else "待收回",

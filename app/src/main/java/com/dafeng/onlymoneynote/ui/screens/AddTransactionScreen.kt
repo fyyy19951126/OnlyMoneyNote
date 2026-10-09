@@ -272,11 +272,15 @@ private fun AddTransactionForm(
 ) {
     val isEdit = editing != null
     val lastUsed by vm.lastUsed.collectAsStateCompat()
-    // 账户按「用得多排前面」排序：笔数降序，同笔数按用户自己的排序
+    // 账户顺序按**最近 20 笔里各账户出现的次数**排（不是全量笔数）：
+    // 最近常用的那个自动排到第一个，换卡用了马上就能顶上来
+    val recentTxs by vm.transactions.collectAsStateCompat()
     val accountOverviews by vm.accountOverviews.collectAsStateCompat()
-    val accounts = remember(accountOverviews) {
+    val accounts = remember(recentTxs, accountOverviews) {
+        val hits = recentTxs.take(20).groupingBy { it.accountId }.eachCount()
         accountOverviews.sortedWith(
-            compareByDescending<LedgerViewModel.AccountOverview> { it.txCount }
+            compareByDescending<LedgerViewModel.AccountOverview> { hits[it.account.id] ?: 0 }
+                .thenByDescending { it.txCount }
                 .thenBy { it.account.sortOrder }
         ).map { it.account }
     }
