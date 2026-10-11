@@ -3,6 +3,7 @@ package com.dafeng.onlymoneynote.data.repo
 import com.dafeng.onlymoneynote.data.local.AccountEntity
 import com.dafeng.onlymoneynote.data.local.CategoryEntity
 import com.dafeng.onlymoneynote.data.local.TransactionEntity
+import com.dafeng.onlymoneynote.data.local.TxType
 import com.dafeng.onlymoneynote.data.remote.BackupAccount
 import com.dafeng.onlymoneynote.data.remote.BackupCategory
 import com.dafeng.onlymoneynote.data.remote.BackupPayload
@@ -34,7 +35,10 @@ class BackupRepository @Inject constructor(
         val dav = settings.settingsFlowOnce()
 
         val payload = BackupPayload(
-            version = 4,
+            // 不写死 4。v4 之后又加了 v5（转账的 toAccountId），写成 4 会跟
+            // BackupPayload 的默认值、以及实际带出去的字段三方不一致 ——
+            // 功能上碰巧没出事（inferTypes 只看 >= 3），但跨版本判断已经失真了。
+            version = BackupPayload.CURRENT_VERSION,
             exportedAt = System.currentTimeMillis(),
             deviceName = deviceName,
             settings = BackupSettings(
@@ -59,7 +63,10 @@ class BackupRepository @Inject constructor(
                 )
             },
             transactions = transactions.map {
-                BackupTransaction(it.id, it.amountCents, it.type, it.categoryId, it.dateMillis, it.note, it.createdAt, it.reimbursed, it.accountId)
+                BackupTransaction(
+                    it.id, it.amountCents, it.type, it.categoryId, it.dateMillis,
+                    it.note, it.createdAt, it.reimbursed, it.accountId, it.toAccountId
+                )
             }
         )
         return json.encodeToString(BackupPayload.serializer(), payload)
@@ -150,6 +157,17 @@ class BackupRepository @Inject constructor(
             )
         }
         for (t in payload.transactions) {
+            val resolvedAccount =
+                if (t.accountId in knownAccounts) t.accountId
+                else AccountEntity.UNSPECIFIED_ID
+            // 转账的转入方同样要兜底。老备份（v4 及更早）没这个字段 = 0，
+            // 且老备份里也没有转账，两条路都落到 0，不影响任何老用户。
+            val resolvedToAccount =
+                if (t.type == TxType.TRANSFER.value && t.toAccountId in knownAccounts) {
+                    t.toAccountId
+                } else {
+                    0L
+                }
             ledger.addTransaction(
                 TransactionEntity(
                     id = t.id,
@@ -161,8 +179,8 @@ class BackupRepository @Inject constructor(
                     createdAt = t.createdAt,
                     reimbursed = t.reimbursed,
                     // 备份里指向一个已经不存在的账户时兜底归「未指定」，不留野指针
-                    accountId = if (t.accountId in knownAccounts) t.accountId
-                    else AccountEntity.UNSPECIFIED_ID
+                    accountId = resolvedAccount,
+                    toAccountId = resolvedToAccount
                 )
             )
         }

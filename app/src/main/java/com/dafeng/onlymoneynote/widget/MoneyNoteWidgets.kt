@@ -84,31 +84,40 @@ object TodayWidget : GlanceAppWidget() {
             modifier = GlanceModifier.fillMaxSize().background(Bg).cornerRadius(18.dp)
         ) {
             Column(
-                modifier = GlanceModifier.fillMaxSize().padding(12.dp)
+                modifier = GlanceModifier.fillMaxSize()
+                    .padding(10.dp)
                     .clickable(openApp(context)),
-                verticalAlignment = Alignment.CenterVertically
+                // 顶部对齐：这个格子只有 2 行高，内容居中会在上下各留一截空白，
+                // 看着像缺了什么；靠上更紧凑
+                verticalAlignment = Alignment.Top
             ) {
-                Text("今日收支", style = TextStyle(color = SubText, fontSize = 10.sp))
-                Spacer(GlanceModifier.height(4.dp))
+                Text("今日支出", style = TextStyle(color = SubText, fontSize = 11.sp))
+                Spacer(GlanceModifier.height(2.dp))
+                Text(
+                    "¥" + LedgerViewModel.formatCents(s.todayExpense),
+                    style = TextStyle(
+                        color = ExpenseColor, fontSize = 19.sp, fontWeight = FontWeight.Bold
+                    )
+                )
+                Spacer(GlanceModifier.height(6.dp))
                 Row(modifier = GlanceModifier.fillMaxWidth()) {
-                    Column(modifier = GlanceModifier.defaultWeight()) {
-                        Text(
-                            "¥" + LedgerViewModel.formatCents(s.todayExpense),
-                            style = TextStyle(
-                                color = ExpenseColor, fontSize = 16.sp, fontWeight = FontWeight.Bold
-                            )
-                        )
-                        Text("支出", style = TextStyle(color = SubText, fontSize = 9.sp))
-                    }
-                    Spacer(GlanceModifier.width(14.dp))
                     Column(modifier = GlanceModifier.defaultWeight()) {
                         Text(
                             "¥" + LedgerViewModel.formatCents(s.todayIncome),
                             style = TextStyle(
-                                color = IncomeColor, fontSize = 16.sp, fontWeight = FontWeight.Bold
+                                color = IncomeColor, fontSize = 13.sp, fontWeight = FontWeight.Bold
                             )
                         )
                         Text("收入", style = TextStyle(color = SubText, fontSize = 9.sp))
+                    }
+                    Column(modifier = GlanceModifier.defaultWeight()) {
+                        val balance = s.todayIncome - s.todayExpense
+                        Text(
+                            (if (balance >= 0) "+¥" else "-¥") +
+                                LedgerViewModel.formatCents(kotlin.math.abs(balance)),
+                            style = TextStyle(color = MainText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        )
+                        Text("结余", style = TextStyle(color = SubText, fontSize = 9.sp))
                     }
                 }
             }
@@ -135,39 +144,64 @@ object MonthWidget : GlanceAppWidget() {
             modifier = GlanceModifier.fillMaxSize().background(Bg).cornerRadius(18.dp)
         ) {
             Column(
-                modifier = GlanceModifier.fillMaxSize().padding(12.dp)
+                modifier = GlanceModifier.fillMaxSize()
+                    // 内边距收到 10dp：原来 12dp 在 2×2 的格子里显得空，
+                    // 文字挤在左上角，下面一大片留白
+                    .padding(10.dp)
                     .clickable(openApp(context)),
-                verticalAlignment = Alignment.CenterVertically
+                // 顶部对齐而不是垂直居中：占满 4 行时内容更靠上，
+                // 数字不会飘在格子中间，下方留白连成一片
+                verticalAlignment = Alignment.Top
             ) {
-                Text("本月", style = TextStyle(color = SubText, fontSize = 10.sp))
-                Spacer(GlanceModifier.height(4.dp))
-                Row(modifier = GlanceModifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "本月支出",
+                        style = TextStyle(color = SubText, fontSize = 11.sp)
+                    )
+                }
+                // 支出是这块的主角：单独一行、字号最大，下面「收入 / 结余」退成小字。
+                // 之前支出和收入平分两列，视觉权重一样，看不出哪个是重点。
+                Spacer(GlanceModifier.height(2.dp))
+                Text(
+                    "¥" + LedgerViewModel.formatCents(s.monthExpense),
+                    style = TextStyle(
+                        color = ExpenseColor,
+                        fontSize = 21.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+                Spacer(GlanceModifier.height(8.dp))
+                Row(
+                    modifier = GlanceModifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Column(modifier = GlanceModifier.defaultWeight()) {
                         Text(
-                            "¥" + LedgerViewModel.formatCents(s.monthExpense),
-                            style = TextStyle(
-                                color = ExpenseColor, fontSize = 15.sp, fontWeight = FontWeight.Bold
-                            )
+                            "收入",
+                            style = TextStyle(color = SubText, fontSize = 9.sp)
                         )
-                        Text("支出", style = TextStyle(color = SubText, fontSize = 9.sp))
-                    }
-                    Spacer(GlanceModifier.width(14.dp))
-                    Column(modifier = GlanceModifier.defaultWeight()) {
                         Text(
                             "¥" + LedgerViewModel.formatCents(s.monthIncome),
                             style = TextStyle(
-                                color = IncomeColor, fontSize = 15.sp, fontWeight = FontWeight.Bold
+                                color = IncomeColor, fontSize = 13.sp, fontWeight = FontWeight.Bold
                             )
                         )
-                        Text("收入", style = TextStyle(color = SubText, fontSize = 9.sp))
+                    }
+                    Spacer(GlanceModifier.width(10.dp))
+                    Column(modifier = GlanceModifier.defaultWeight()) {
+                        Text(
+                            "结余",
+                            style = TextStyle(color = SubText, fontSize = 9.sp)
+                        )
+                        Text(
+                            (if (balance >= 0) "+¥" else "-¥") +
+                                LedgerViewModel.formatCents(kotlin.math.abs(balance)),
+                            style = TextStyle(
+                                color = MainText, fontSize = 13.sp, fontWeight = FontWeight.Bold
+                            )
+                        )
                     }
                 }
-                Spacer(GlanceModifier.height(6.dp))
-                Text(
-                    (if (balance >= 0) "结余 +¥" else "结余 -¥") +
-                        LedgerViewModel.formatCents(kotlin.math.abs(balance)),
-                    style = TextStyle(color = MainText, fontSize = 11.sp)
-                )
             }
         }
     }
@@ -191,12 +225,15 @@ object RecentWidget : GlanceAppWidget() {
             modifier = GlanceModifier.fillMaxSize().background(Bg).cornerRadius(18.dp)
         ) {
             Column(
-                modifier = GlanceModifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp)
+                modifier = GlanceModifier.fillMaxSize()
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
                     .clickable(openApp(context))
             ) {
-                Text("最近账单", style = TextStyle(color = SubText, fontSize = 10.sp))
+                Text("最近账单", style = TextStyle(color = SubText, fontSize = 11.sp))
                 Spacer(GlanceModifier.height(4.dp))
                 if (s.recent.isEmpty()) {
+                    // 空列表时也占住位置，免得「还没有账单」贴着标题、
+                    // 整个格子显得空荡荡
                     Text(
                         "还没有账单",
                         style = TextStyle(color = SubText, fontSize = 11.sp),

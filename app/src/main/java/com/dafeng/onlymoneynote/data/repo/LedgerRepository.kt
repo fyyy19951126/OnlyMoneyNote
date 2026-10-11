@@ -41,6 +41,9 @@ class LedgerRepository @Inject constructor(
         return txDao.observeAccountPeriodStats(start, end)
     }
 
+    /** 全时段转账列表（转账页） */
+    fun observeTransfers() = txDao.observeTransfers()
+
     suspend fun addAccount(account: AccountEntity): Long = accountDao.insert(account)
 
     suspend fun updateAccount(account: AccountEntity) = accountDao.update(account)
@@ -53,7 +56,41 @@ class LedgerRepository @Inject constructor(
     suspend fun moveTransactionsToAccount(from: Long, to: Long) =
         txDao.moveTransactionsToAccount(from, to)
 
+    /** 删账户时清掉它作为**转账转入方**的指向 */
+    suspend fun clearToAccount(accountId: Long) = txDao.clearToAccount(accountId)
+
+    /**
+     * 批量把选中的一批账单改到目标账户下，返回实际改动条数。
+     *
+     * 只改 accountId 一列 —— 金额、分类、报销标记一律不碰，
+     * 免得批量操作顺手把别的东西改坏。余额是现算的，改完自动重算。
+     */
+    suspend fun assignTransactionsToAccount(ids: List<Long>, toAccountId: Long): Int {
+        if (ids.isEmpty()) return 0
+        // 走分批版本：全选几千条时单条 IN (:ids) 会撞上 SQLite 的 999 变量上限
+        return txDao.assignTransactionsToAccountSafely(ids, toAccountId)
+    }
+
+    /** 批量把一批账单改到某个分类下，返回实际改动条数 */
+    suspend fun assignTransactionsToCategory(ids: List<Long>, toCategoryId: Long): Int {
+        if (ids.isEmpty() || toCategoryId <= 0L) return 0
+        return txDao.assignTransactionsToCategorySafely(ids, toCategoryId)
+    }
+
     suspend fun accountsOnce(): List<AccountEntity> = accountDao.getAllOnce()
+
+    /**
+     * 按名字找账户 id；找不到返回 null。
+     *
+     * 导入第三方账单时用来把「支付宝」这类**账户名**对应到本机的 accountId。
+     * 故意**不新建账户**：文件里叫「现金」的不代表用户想要一个叫「现金」的账户，
+     * 认不出来就归「未指定」，之后可以用「整理」批量改。
+     */
+    suspend fun findAccountByName(name: String): Long? {
+        val n = name.trim()
+        if (n.isEmpty()) return null
+        return accountDao.getAllOnce().firstOrNull { it.name == n }?.id
+    }
 
     suspend fun clearAccounts() = accountDao.clearAll()
 
@@ -63,10 +100,16 @@ class LedgerRepository @Inject constructor(
      */
     suspend fun seedAccountsIfEmpty() {
         if (accountDao.count() > 0) return
+        // ⚠️ 不能用「builtIn 就写 UNSPECIFIED_ID、否则写 0」这种写法：
+        // 万一以后在 DefaultAccounts 里加了第二个 builtIn = true，
+        // 两行都会插 id=1，主键冲突直接崩。这里显式保证「固定 id 只用一次」。
+        var fixedIdUsed = false
         DefaultAccounts.all().forEachIndexed { i, seed ->
+            val wantFixedId = seed.builtIn && !fixedIdUsed
+            if (wantFixedId) fixedIdUsed = true
             accountDao.insert(
                 AccountEntity(
-                    id = if (seed.builtIn) AccountEntity.UNSPECIFIED_ID else 0,
+                    id = if (wantFixedId) AccountEntity.UNSPECIFIED_ID else 0,
                     name = seed.name,
                     iconKey = seed.iconKey,
                     sortOrder = i,

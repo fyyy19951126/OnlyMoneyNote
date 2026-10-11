@@ -1,5 +1,6 @@
 package com.dafeng.onlymoneynote.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudDownload
@@ -25,6 +27,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,7 +50,9 @@ import com.dafeng.onlymoneynote.ui.LedgerViewModel
 fun WebDavScreen(
     vm: LedgerViewModel,
     settings: SettingsRepository.WebDavSettings,
-    busy: Boolean
+    busy: Boolean,
+    /** 「每天自动备份」开关的当前状态 */
+    autoBackupOn: Boolean
 ) {
     var url by remember { mutableStateOf(settings.baseUrl) }
     var user by remember { mutableStateOf(settings.username) }
@@ -100,6 +106,34 @@ fun WebDavScreen(
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        // 2026-10-11：每天首次打开自动备份的开关。
+        // 默认关 —— App「平时完全不联网」是这个产品的底线，
+        // 不能因为加了自动备份就悄悄开始耗流量，所以要用户自己打开。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("每天自动备份", fontSize = 13.5.sp)
+                Text(
+                    "打开 App 的第一次会自动上传一次",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = autoBackupOn,
+                onCheckedChange = { vm.setAutoBackupEnabled(it) },
+                colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary)
+            )
         }
 
         Spacer(Modifier.height(10.dp))

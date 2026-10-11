@@ -2,6 +2,7 @@ package com.dafeng.onlymoneynote.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -255,19 +256,26 @@ fun HomeFilterSheet(
             Spacer(Modifier.height(10.dp))
 
             // 层级列表：一级一行，点开在下方缩进露出二级胶囊
+            //
+            // 整个列表**只允许同时展开一个一级**（2026-10-10 用户反馈）。
+            // 同时展开多个时二级区叠在一起，一级行被挤到看不见，
+            // 视觉上就是「二级压盖一级」。一次只开一个，从根上避免这个问题。
             parents.forEach { parent ->
                 val kids = kidsOf[parent.id].orEmpty().sortedBy { it.sortOrder }
                 val parentOn = parent.id in draft.categoryIds
                 val onCount = kids.count { it.id in draft.categoryIds }
-                val open = parent.id in expanded || kids.isEmpty()
+                val open = parent.id in expanded
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 4.dp)
+                        .padding(bottom = if (open) 4.dp else 2.dp)
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            // 一级行留出固定高度：不管名字多长、下面有没有展开，
+                            // 这一行的高度都不变，展开二级时不会被挤扁
+                            .height(IntrinsicSize.Min)
                             .clip(RoundedCornerShape(12.dp))
                             .background(
                                 if (parentOn) accent.copy(alpha = 0.10f) else Color.Transparent
@@ -314,9 +322,10 @@ fun HomeFilterSheet(
                                     .size(20.dp)
                                     .rotate(if (open) 180f else 0f)
                                     .clip(CircleShape)
+                                    // 一次只展开一个一级：展开新的就把别的收起来。
+                                    // 2026-10-10 用户反馈二级压盖一级，多层同时展开是根因之一。
                                     .clickable {
-                                        expanded = if (parent.id in expanded)
-                                            expanded - parent.id else expanded + parent.id
+                                        expanded = if (open) emptySet() else setOf(parent.id)
                                     },
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -328,38 +337,71 @@ fun HomeFilterSheet(
                             )
                         }
                     }
-                    // 二级：缩进 + 竖线，层级一眼能看出来
+                    // 二级：缩进后另起一块，**不跟一级共用 FlowRow**。
+                    //
+                    // 2026-10-10 用户反馈「二级分类压盖一级分类」：根因是一级行的
+                    // Row 里也有一个会换行的权重布局（名字 + 小类数 + 箭头），
+                    // 二级再用 FlowRow 时两层的可换行元素互相争抢行高，
+                    // 展开后一级行被挤扁、二级顶上来看着像盖住了。
+                    //
+                    // 现在一级行宽度写死 = 二级区宽度减去缩进，两边对齐成同一列，
+                    // 一级恒定不被挤压。
                     if (kids.isNotEmpty() && parent.id in expanded) {
-                        FlowRow(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 18.dp, bottom = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                .padding(start = 18.dp, bottom = 4.dp)
                         ) {
-                            kids.forEach { c ->
-                                val on = c.id in draft.categoryIds
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(
-                                            if (on) accent else MaterialTheme.colorScheme.surfaceVariant
-                                        )
-                                        .clickable {
-                                            draft = draft.copy(
-                                                categoryIds = if (on) draft.categoryIds - c.id
-                                                else draft.categoryIds + c.id
-                                            )
+                            // 二级自己一个小容器：固定行距、上下有留白，
+                            // 视觉上和一级行分成两块，而不是糊在一起
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 2.dp, bottom = 2.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                // 每行固定放几个二级，不让 FlowRow 自由换行
+                                kids.chunked(3).forEach { rowKids ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        rowKids.forEach { c ->
+                                            val on = c.id in draft.categoryIds
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(
+                                                        if (on) accent
+                                                        else MaterialTheme.colorScheme.surfaceVariant
+                                                    )
+                                                    .clickable {
+                                                        draft = draft.copy(
+                                                            categoryIds = if (on)
+                                                                draft.categoryIds - c.id
+                                                            else draft.categoryIds + c.id
+                                                        )
+                                                    }
+                                                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    c.name,
+                                                    fontSize = 12.sp,
+                                                    maxLines = 1,
+                                                    fontWeight = if (on) FontWeight.Medium
+                                                    else FontWeight.Normal,
+                                                    color = if (on) MaterialTheme.colorScheme.onPrimary
+                                                    else MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
                                         }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                                ) {
-                                    Text(
-                                        c.name,
-                                        fontSize = 12.5.sp,
-                                        fontWeight = if (on) FontWeight.Medium else FontWeight.Normal,
-                                        color = if (on) MaterialTheme.colorScheme.onPrimary
-                                        else MaterialTheme.colorScheme.onSurface
-                                    )
+                                        // 一行不足 3 个时补空位，剩余格子的宽度和上面一致
+                                        repeat(3 - rowKids.size) {
+                                            Spacer(Modifier.weight(1f))
+                                        }
+                                    }
                                 }
                             }
                         }

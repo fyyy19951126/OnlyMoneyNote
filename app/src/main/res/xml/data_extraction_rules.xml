@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  换机 / 云备份的排除规则。
+
+  allowBackup="false" 已经把系统自动备份整个关掉了，这一份是**第二道保险**：
+  万一以后有人为了某个需求把 allowBackup 改回 true，这些规则仍然会挡住
+  数据库和配置文件。
+
+  账单正文（moneynote.db）和 WebDAV 连接信息都在排除之列 ——
+  前者是极私密的花销记录，后者是服务器地址 + 账号。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+    </device-transfer>
+</data-extraction-rules>

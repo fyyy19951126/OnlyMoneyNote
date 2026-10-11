@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Restore
@@ -67,6 +68,8 @@ fun ImportExportSheet(
     /** 长按确认后回调：三个开关决定除账单外还要不要一起清掉 */
     onClearData: (theme: Boolean, categories: Boolean, settings: Boolean) -> Unit,
     onImportCsv: (ByteArray) -> Unit,
+    /** 2026-10-11：导入钱迹等第三方软件的账单 */
+    onImportThirdParty: (ThirdPartyKind, ByteArray) -> Unit,
     /** 选了本地 JSON 备份并确认覆盖后回调（Uri 交给 ViewModel 去读） */
     onImportJson: (Uri) -> Unit,
     onExportJson: (Uri) -> Unit,
@@ -85,6 +88,14 @@ fun ImportExportSheet(
     // 选好的 CSV 先存着，等用户确认了再导入
     var pendingCsv by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
     var csvError by remember { mutableStateOf<String?>(null) }
+    // 2026-10-11 用户要求：本地备份里加「导入各类账单」，覆盖市面常见记账软件。
+    // 和 CSV 那条路径分开：xlsx 要走 [QianJiImporter]，而且转账要单独落。
+    var pendingThird by remember { mutableStateOf<ThirdPartyPick?>(null) }
+    var thirdError by remember { mutableStateOf<String?>(null) }
+    // 正在选哪个软件的导出文件；选完立刻弹系统文件选择器
+    var pendingThirdKind by remember { mutableStateOf<ThirdPartyKind?>(null) }
+    // 「选哪个软件」这一层菜单
+    var showThirdMenu by remember { mutableStateOf(false) }
     // 选好的 JSON 备份：先弹确认，确认了才真的覆盖本机
     var pendingJson by remember { mutableStateOf<Uri?>(null) }
     var pendingJsonName by remember { mutableStateOf("") }
@@ -107,6 +118,26 @@ fun ImportExportSheet(
     val exportJsonLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri -> if (uri != null) onExportJson(uri) }
+
+    // 第三方记账软件账单：先选软件，再选它导出的文件。
+    // 「先选软件」是因为各家的表头和字段语义都不同（钱迹的账户在「记账者」列，
+    // 大象记账在「账户」列），让用户先认一下自己导的是哪个软件的，解析才对得上。
+    val thirdPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val kind = pendingThirdKind ?: return@rememberLauncherForActivityResult
+        pendingThirdKind = null
+        if (uri == null) return@rememberLauncherForActivityResult
+        val bytes = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull()
+        if (bytes == null || bytes.isEmpty()) {
+            thirdError = "读不到文件内容，换一个文件试试"
+        } else {
+            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "导入文件"
+            pendingThird = ThirdPartyPick(kind, name, bytes)
+        }
+    }
 
     // MIME 用 */* 而不是 text/csv —— 部分国产 ROM 的文件选择器不认 text/csv，会选不到位置
     val exportCsvLauncher = rememberLauncherForActivityResult(
@@ -134,15 +165,22 @@ fun ImportExportSheet(
             Column {
                 IoRow(
                     icon = Icons.Outlined.Download,
+                    title = "导入各类账单",
+                    subtitle = "支持钱迹等记账软件导出的 Excel / CSV",
+                    onClick = { showThirdMenu = true }
+                )
+                Spacer(Modifier.height(8.dp))
+                IoRow(
+                    icon = Icons.Outlined.Download,
                     title = "导入账单 CSV",
-                    subtitle = "日期、一级分类、二级分类（没有即为空）、收支、金额、备注、报销、账户",
+                    subtitle = "",
                     onClick = { pickCsv.launch(arrayOf("*/*")) }
                 )
                 Spacer(Modifier.height(8.dp))
                 IoRow(
                     icon = Icons.Outlined.UploadFile,
                     title = "导出账单 CSV",
-                    subtitle = "日期、一级分类、二级分类（没有即为空）、收支、金额、备注、报销、账户",
+                    subtitle = "",
                     onClick = {
                         val ts = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.CHINA)
                             .format(java.util.Date())
@@ -153,14 +191,14 @@ fun ImportExportSheet(
                 IoRow(
                     icon = Icons.Outlined.Restore,
                     title = "导入 JSON 备份文件",
-                    subtitle = "包含分类、账户、主题和账单",
+                    subtitle = "",
                     onClick = { pickJson.launch(arrayOf("*/*")) }
                 )
                 Spacer(Modifier.height(8.dp))
                 IoRow(
                     icon = Icons.Outlined.UploadFile,
                     title = "导出 JSON 备份文件",
-                    subtitle = "包含分类、账户、主题和账单",
+                    subtitle = "",
                     onClick = {
                         val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.CHINA)
                             .format(java.util.Date())
@@ -184,6 +222,179 @@ fun ImportExportSheet(
                     onClick = { confirmClear = true }
                 )
             }
+    }
+
+    /* ---------------- 选哪个记账软件 ---------------- */
+    if (showThirdMenu) {
+        AlertDialog(
+            onDismissRequest = { showThirdMenu = false },
+            shape = RoundedCornerShape(24.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("从哪个软件导入？", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Column {
+                    ThirdPartyKind.entries.forEach { k ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    showThirdMenu = false
+                                    pendingThirdKind = k
+                                    thirdPicker.launch(arrayOf("*/*"))
+                                }
+                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(k.label, fontSize = 14.5.sp, fontWeight = FontWeight.Medium)
+                                Text(
+                                    k.hint,
+                                    fontSize = 11.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                Text(
+                    "取消",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.clickable { showThirdMenu = false }.padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+            }
+        )
+    }
+
+    /* ---------------- 第三方账单：解析结果确认 ---------------- */
+    pendingThird?.let { pick ->
+        val parsed = remember(pick.kind, pick.bytes) {
+            runCatching { ThirdPartyImportSupport.parse(pick.kind, pick.bytes) }.getOrNull()
+        }
+        if (parsed == null || (parsed.rows.isEmpty() && parsed.transfers.isEmpty())) {
+            AlertDialog(
+                onDismissRequest = { pendingThird = null },
+                shape = RoundedCornerShape(24.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+                title = { Text("没解析出账单", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
+                text = {
+                    Text(
+                        "「${pick.name}」里没有可用的账单。\n\n" +
+                            "确认是在${pick.kind.label}里导出的账单文件（不是账本备份）。",
+                        fontSize = 13.5.sp,
+                        lineHeight = 20.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                confirmButton = {
+                    Text(
+                        "知道了",
+                        color = AppTheme.primary,
+                        modifier = Modifier.clickable { pendingThird = null }.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            )
+        } else {
+            val plan = remember(parsed) { ThirdPartyImportSupport.planOf(parsed) }
+            val df = remember { java.text.SimpleDateFormat("yyyy/M/d", java.util.Locale.CHINA) }
+            AlertDialog(
+                onDismissRequest = { pendingThird = null },
+                shape = RoundedCornerShape(24.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+                title = {
+                    Text(
+                        "导入 ${parsed.rows.size + parsed.transfers.size} 笔？",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                text = {
+                    Text(
+                        buildString {
+                            append("来源：").append(pick.kind.label).append('\n')
+                            append("文件：").append(pick.name).append('\n')
+                            if (plan.minDate != null && plan.maxDate != null) {
+                                append("时间范围：")
+                                append(df.format(java.util.Date(plan.minDate!!)))
+                                append(" ~ ")
+                                append(df.format(java.util.Date(plan.maxDate!!)))
+                                append('\n')
+                            }
+                            append("其中收支 ").append(parsed.rows.size).append(" 笔")
+                            if (parsed.transfers.isNotEmpty()) {
+                                append("、转账 ").append(parsed.transfers.size).append(" 笔")
+                            }
+                            append('\n')
+                            append("会清空现有 ").append(txCount).append(" 笔账单和 ")
+                            append(categoryCount).append(" 个分类，按文件重建 ")
+                            append(plan.parentCount).append(" 个一级、")
+                            append(plan.childCount).append(" 个二级分类。\n")
+                            if (parsed.skippedCurrency > 0) {
+                                append("⚠ 有 ").append(parsed.skippedCurrency)
+                                append(" 笔是非人民币，已跳过（本 App 不换算汇率）。\n")
+                            }
+                            if (parsed.skippedBad > 0) {
+                                append("⚠ 有 ").append(parsed.skippedBad).append(" 笔读不出来，已跳过。\n")
+                            }
+                            val noAccount = parsed.rows.count { it.accountName.isBlank() }
+                            if (noAccount > 0) {
+                                append("其中 ").append(noAccount)
+                                append(" 笔原文件没写账户，会归「未指定」。\n")
+                            }
+                            append("这一步不能撤销。")
+                        },
+                        fontSize = 13.5.sp,
+                        lineHeight = 20.sp
+                    )
+                },
+                confirmButton = {
+                    Text(
+                        "覆盖导入",
+                        color = AppTheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clickable {
+                                pendingThird = null
+                                onImportThirdParty(pick.kind, pick.bytes)
+                            }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                },
+                dismissButton = {
+                    Text(
+                        "取消",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clickable { pendingThird = null }.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+            )
+        }
+    }
+
+    thirdError?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { thirdError = null },
+            shape = RoundedCornerShape(24.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("这个文件读不了", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
+            text = { Text(msg, fontSize = 14.sp) },
+            confirmButton = {
+                Text(
+                    "知道了",
+                    color = AppTheme.primary,
+                    modifier = Modifier.clickable { thirdError = null }.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        )
     }
 
     /* ---------------- 清空确认：两步 ---------------- */

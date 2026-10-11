@@ -29,7 +29,23 @@ data class TxWithCategory(
     val accountName: String = AccountEntity.UNSPECIFIED_NAME,
     /** 账户头像：列表里金额左边画这个小图标，不带名字 */
     val accountIconKey: String = "emoji:💳",
-    val accountColorKey: String = ""
+    val accountColorKey: String = "",
+    /**
+     * 转账的转入方。非转账是 0，列表里画成「箭头 → 账户头像」。
+     *
+     * 加这三个字段而不是新开一张表：转账在列表、编辑、备份里都和普通账单同路，
+     * 只是渲染方式不一样（不显示分类，多一个目标账户）。
+     */
+    val toAccountId: Long = 0L,
+    val toAccountName: String = "",
+    val toAccountIconKey: String = "",
+    val toAccountColorKey: String = "",
+    /**
+     * 原始创建时间。编辑时必须带回 —— 不带的话 [TransactionEntity.createdAt]
+     * 会走默认值 `System.currentTimeMillis()`，等于每编辑一次就把
+     * 「创建于什么时候」改成现在。
+     */
+    val createdAt: Long = 0L
 )
 
 /** 报销汇总：按收支类型分组的报销金额 + 笔数 */
@@ -175,14 +191,20 @@ interface TransactionDao {
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
+               t.createdAt AS createdAt,
                t.accountId AS accountId,
                COALESCE(a.name, '未指定') AS accountName,
                COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
-               COALESCE(a.colorKey, '') AS accountColorKey
+               COALESCE(a.colorKey, '') AS accountColorKey,
+               t.toAccountId AS toAccountId,
+               COALESCE(a2.name, '') AS toAccountName,
+               COALESCE(a2.iconKey, '') AS toAccountIconKey,
+               COALESCE(a2.colorKey, '') AS toAccountColorKey
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId
         LEFT JOIN account a ON a.id = t.accountId
+        LEFT JOIN account a2 ON a2.id = t.toAccountId
         ORDER BY t.dateMillis DESC, t.id DESC
         """
     )
@@ -193,12 +215,13 @@ interface TransactionDao {
         SELECT type AS type, COALESCE(SUM(amountCents), 0) AS totalCents
         FROM `transaction`
         WHERE dateMillis >= :startMillis AND dateMillis < :endMillis
+          AND type != 2
         GROUP BY type
         """
     )
     fun observeSummary(startMillis: Long, endMillis: Long): Flow<List<MonthlySummary>>
 
-    /** 区间内的分类聚合，按金额倒序。用于统计页占比排行。 */
+    /** 区间内的分类聚合，按金额倒序。用于统计页占比排行。只统计支出 / 收入，转账没有分类 */
     @Query(
         """
         SELECT t.categoryId AS categoryId,
@@ -233,6 +256,38 @@ interface TransactionDao {
     )
     fun observeRange(startMillis: Long, endMillis: Long): Flow<List<TransactionEntity>>
 
+    /**
+     * 全时段转账列表（转账页用）。
+     *
+     * 转账不参与收支统计，但要有地方看得见 —— 否则用户记了一笔转账
+     * 在账单列表里找不到，会以为没记上。
+     */
+    @Query(
+        """
+        SELECT t.id AS id, t.amountCents AS amountCents, t.type AS type,
+               t.categoryId AS categoryId,
+               '' AS categoryName,
+               NULL AS parentName,
+               'more_horiz' AS iconKey,
+               t.dateMillis AS dateMillis, t.note AS note,
+               t.reimbursed AS reimbursed,
+               t.accountId AS accountId,
+               COALESCE(a.name, '未指定') AS accountName,
+               COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
+               COALESCE(a.colorKey, '') AS accountColorKey,
+               t.toAccountId AS toAccountId,
+               COALESCE(a2.name, '') AS toAccountName,
+               COALESCE(a2.iconKey, 'emoji:💳') AS toAccountIconKey,
+               COALESCE(a2.colorKey, '') AS toAccountColorKey
+        FROM `transaction` t
+        LEFT JOIN account a ON a.id = t.accountId
+        LEFT JOIN account a2 ON a2.id = t.toAccountId
+        WHERE t.type = 2
+        ORDER BY t.dateMillis DESC, t.id DESC
+        """
+    )
+    fun observeTransfers(): Flow<List<TransferWithAccount>>
+
     /** 区间内的账单，带分类名（统计页展开看单笔明细用）。 */
     @Query(
         """
@@ -245,14 +300,20 @@ interface TransactionDao {
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
+               t.createdAt AS createdAt,
                t.accountId AS accountId,
                COALESCE(a.name, '未指定') AS accountName,
                COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
-               COALESCE(a.colorKey, '') AS accountColorKey
+               COALESCE(a.colorKey, '') AS accountColorKey,
+               t.toAccountId AS toAccountId,
+               COALESCE(a2.name, '') AS toAccountName,
+               COALESCE(a2.iconKey, '') AS toAccountIconKey,
+               COALESCE(a2.colorKey, '') AS toAccountColorKey
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId
         LEFT JOIN account a ON a.id = t.accountId
+        LEFT JOIN account a2 ON a2.id = t.toAccountId
         WHERE t.dateMillis >= :startMillis AND t.dateMillis < :endMillis
         ORDER BY t.dateMillis DESC, t.id DESC
         """
@@ -291,14 +352,20 @@ interface TransactionDao {
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
+               t.createdAt AS createdAt,
                t.accountId AS accountId,
                COALESCE(a.name, '未指定') AS accountName,
                COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
-               COALESCE(a.colorKey, '') AS accountColorKey
+               COALESCE(a.colorKey, '') AS accountColorKey,
+               t.toAccountId AS toAccountId,
+               COALESCE(a2.name, '') AS toAccountName,
+               COALESCE(a2.iconKey, '') AS toAccountIconKey,
+               COALESCE(a2.colorKey, '') AS toAccountColorKey
         FROM `transaction` t
         LEFT JOIN category c ON c.id = t.categoryId
         LEFT JOIN category p ON p.id = c.parentId
         LEFT JOIN account a ON a.id = t.accountId
+        LEFT JOIN account a2 ON a2.id = t.toAccountId
         WHERE t.reimbursed = 1
         ORDER BY t.dateMillis DESC, t.id DESC
         """
@@ -319,21 +386,54 @@ interface TransactionDao {
     fun observeReimburseStats(): Flow<List<ReimburseStat>>
 
     /**
-     * 每个账户名下的净流水（收入加、支出减）+ 笔数，全时段。
+     * 每个账户名下的净流水（收入加、支出减、**转账按方向一加一减**）+ 笔数，全时段。
      * 当前余额 = account.initialCents + netCents，所以删改账单会自动反映，无需补偿。
+     *
+     * 转账不能跟收支混在一个 GROUP BY 里：转出方的钱要减、转入方的钱要加，
+     * 同一行的 accountId / toAccountId 是两个不同账户，靠 `account` 表当驱动表
+     * 才能让每个账户既算到「自己转出的」又算到「别人转进来的」。
+     *
+     * 对总资产没有影响（转出 −X、转入 +X 相抵），但单账户余额准了。
      */
     @Query(
         """
-        SELECT t.accountId AS accountId,
-               COALESCE(SUM(CASE WHEN t.type = 1 THEN t.amountCents ELSE -t.amountCents END), 0) AS netCents,
-               COUNT(*) AS count
-        FROM `transaction` t
-        GROUP BY t.accountId
+        SELECT acc.id AS accountId,
+               COALESCE(f.net, 0) + COALESCE(tin.net, 0) - COALESCE(tout.net, 0) AS netCents,
+               COALESCE(c.cnt, 0) AS count
+        FROM `account` acc
+        LEFT JOIN (
+            -- 收支：转出方记在 accountId，收入加、支出减。转账（type=2）不算在这里
+            SELECT accountId AS id,
+                   SUM(CASE WHEN type = 1 THEN amountCents ELSE -amountCents END) AS net
+            FROM `transaction`
+            WHERE type != 2
+            GROUP BY accountId
+        ) f ON f.id = acc.id
+        LEFT JOIN (
+            -- 转进这个账户的钱（别名不能叫 into，INTO 是 SQL 关键字）
+            SELECT toAccountId AS id, SUM(amountCents) AS net
+            FROM `transaction`
+            WHERE type = 2 AND toAccountId != 0
+            GROUP BY toAccountId
+        ) tin ON tin.id = acc.id
+        LEFT JOIN (
+            -- 从这个账户转出的钱
+            SELECT accountId AS id, SUM(amountCents) AS net
+            FROM `transaction`
+            WHERE type = 2
+            GROUP BY accountId
+        ) tout ON tout.id = acc.id
+        LEFT JOIN (
+            SELECT accountId AS id, COUNT(*) AS cnt
+            FROM `transaction`
+            GROUP BY accountId
+        ) c ON c.id = acc.id
+        ORDER BY acc.sortOrder ASC, acc.id ASC
         """
     )
     fun observeAccountNet(): Flow<List<AccountNet>>
 
-    /** 每个账户在区间内的收入 / 支出，账户统计页的「本月」两列。 */
+    /** 某个账户在区间内的收入 / 支出，账户统计页的「本月」两列。转账不算在内 */
     @Query(
         """
         SELECT t.accountId AS accountId,
@@ -342,6 +442,7 @@ interface TransactionDao {
                COUNT(*) AS count
         FROM `transaction` t
         WHERE t.dateMillis >= :startMillis AND t.dateMillis < :endMillis
+          AND t.type != 2
         GROUP BY t.accountId
         """
     )
@@ -354,6 +455,73 @@ interface TransactionDao {
     /** 把一个账户名下的账单转移到另一个账户（删账户前的转移）。 */
     @Query("UPDATE `transaction` SET accountId = :toAccountId WHERE accountId = :fromAccountId")
     suspend fun moveTransactionsToAccount(fromAccountId: Long, toAccountId: Long)
+
+    /**
+     * 清掉某账户作为**转账转入方**的所有指向。
+     *
+     * 删账户时必须一起做：转账的 `accountId` 是转出方、`toAccountId` 是转入方，
+     * 只处理前者的���，那些「转进这个账户」的转账就会指向一个不存在的 id，
+     * 列表里 LEFT JOIN 查不到名字，渲染成「甲 → 」。
+     * 置 0 = 不再是转账（余额计算会把这一列忽略掉）。
+     */
+    @Query("UPDATE `transaction` SET toAccountId = 0 WHERE toAccountId = :accountId")
+    suspend fun clearToAccount(accountId: Long)
+
+    /**
+     * 批量改账户：把选中的这一批账单一次性挂到目标账户下。
+     *
+     * 2026-10-10 用户有 8000 条历史账单全部挂在「未指定」，逐条改不现实，
+     * 所以账单列表加了多选 + 「设为账户」，一次 UPDATE 搞定几百上千条。
+     *
+     * 余额是现算的（期初 + 净流水），所以改完账户余额自动重算，不需要补偿。
+     *
+     * ⚠️ [ids] 会展开成 N 个占位符，而老版本 SQLite 的**变量上限是 999**。
+     * 用户「全选」8000 条会直接 `SQLiteBindOrColumnIndexOutOfRangeException`。
+     * 所以这里按 [SQL_MAX_VARIABLE_NUMBER] 分批 —— 见 [assignTransactionsToAccountSafely]。
+     */
+    @Query("UPDATE `transaction` SET accountId = :toAccountId WHERE id IN (:ids)")
+    suspend fun assignTransactionsToAccount(ids: List<Long>, toAccountId: Long): Int
+
+    /**
+     * 批量改分类：把选中的一批账单挂到 [toCategoryId] 下。
+     *
+     * 只改 categoryId 一列，金额/账户/报销都不动。
+     * 账单本来就都挂在二级分类上，所以 [toCategoryId] 应该是某个二级。
+     */
+    @Query("UPDATE `transaction` SET categoryId = :toCategoryId WHERE id IN (:ids)")
+    suspend fun assignTransactionsToCategory(ids: List<Long>, toCategoryId: Long): Int
+
+    /**
+     * 分批跑 [assignTransactionsToAccount]，绕开 SQLite 的 999 变量上限。
+     *
+     * 老版本 SQLite（Android 上 3.8 之前那套）单条语句最多 999 个绑定变量，
+     * `IN (:ids)` 展开后每个 id 都是一个。用户「全选」8000 条时会直接抛
+     * `SQLiteBindOrColumnIndexOutOfRangeException`。分批是最省事的绕法，
+     * 不用去查 SQLite 版本再决定策略。
+     *
+     * 每批 500：留足余量，将来 SQL 里再加几个别的绑定变量也不会顶到上限。
+     */
+    suspend fun assignTransactionsToAccountSafely(ids: List<Long>, toAccountId: Long): Int {
+        var total = 0
+        for (chunk in ids.chunked(SQL_MAX_VARIABLE_NUMBER)) {
+            total += assignTransactionsToAccount(chunk, toAccountId)
+        }
+        return total
+    }
+
+    /** 同上，为「批量改分类」准备 */
+    suspend fun assignTransactionsToCategorySafely(ids: List<Long>, toCategoryId: Long): Int {
+        var total = 0
+        for (chunk in ids.chunked(SQL_MAX_VARIABLE_NUMBER)) {
+            total += assignTransactionsToCategory(chunk, toCategoryId)
+        }
+        return total
+    }
+
+    companion object {
+        /** 单条 SQL 的绑定变量上限（保守取 500，远低于 SQLite 的 999 硬限） */
+        const val SQL_MAX_VARIABLE_NUMBER = 500
+    }
 }
 
 data class DateBounds(val minAt: Long?, val maxAt: Long?)
@@ -365,12 +533,40 @@ data class AccountNet(
     val count: Int
 )
 
-/** 某个账户在区间内的收入 / 支出（都是正数，单位「分」） */
+/** 某个账户在区间内的收入 / 支出（都是正数，单位「分」）。转账不算在内 */
 data class AccountPeriodStat(
     val accountId: Long,
     val expenseCents: Long,
     val incomeCents: Long,
     val count: Int
+)
+
+/**
+ * 一条转账：转出方 + 转入方。
+ *
+ * 转账没有分类（categoryId 固定 0），所以这里 category 相关字段是占位的。
+ */
+data class TransferWithAccount(
+    val id: Long,
+    val amountCents: Long,
+    val type: Int,
+    val categoryId: Long,
+    val categoryName: String,
+    val parentName: String?,
+    val iconKey: String,
+    val dateMillis: Long,
+    val note: String,
+    val reimbursed: Boolean,
+    /** 转出方 */
+    val accountId: Long,
+    val accountName: String,
+    val accountIconKey: String,
+    val accountColorKey: String,
+    /** 转入方 */
+    val toAccountId: Long,
+    val toAccountName: String,
+    val toAccountIconKey: String,
+    val toAccountColorKey: String
 )
 
 @Dao

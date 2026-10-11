@@ -16,7 +16,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -180,6 +182,8 @@ private fun AppRoot(
     val toast by vm.toast.collectAsState()
     val busy by vm.busy.collectAsState()
     val accountOverviews by vm.accountOverviews.collectAsState()
+    val accounts by vm.accounts.collectAsState()
+    val autoBackupOn by vm.autoBackupOn.collectAsState()
 
     // 提示条：显示 1.8 秒自动消失。
     // 用 LaunchedEffect(toast) 做延时 —— toast 变了协程就重启，不会误清下一条。
@@ -189,6 +193,12 @@ private fun AppRoot(
             vm.clearToast()
         }
     }
+
+    // 每天第一次打开自动备份一次（2026-10-11）。
+    // 放在 Compose 里、且 key 固定 —— 这样「每次 App 进程启动」只触发一次，
+    // 切页面、旋转都不会重复上传。真正的「一天一次」由 ViewModel 里
+    // 记录的 lastBackupDay 判断。
+    LaunchedEffect(Unit) { vm.runDailyAutoBackupIfNeeded() }
 
     // 分享进来的图片：直接打开记账页并跑识别。
     var handledUri by remember { mutableStateOf<Uri?>(null) }
@@ -228,10 +238,25 @@ private fun AppRoot(
 
     // 底栏整条去掉了（用户要求）：主页靠右下角浮空「＋」记一笔，
     // 统计 / 报销 从页头进，设置项从页头标题后的 5 个图标进。
-    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+    // 2026-10-11 用户反馈「不适配底部导航栏（三大金刚键 / 小米小白条）」。
+    //
+    // 根因：targetSdk 36 在 Android 15+ 强制 edge-to-edge，内容会画到导航栏底下。
+    //
+    // ⚠️ 曾经一度把 contentWindowInsets 设成 0，指望「每个页面自己 navigationBarsPadding」，
+    // 结果**6 个二级页（统计/账户/分类管理/报销/本地备份/云端备份）的内容区全是裸的** ——
+    // 只有页面里的 FAB 加了 padding，列表最后几行被导航栏压住/挡住返回手势区。
+    //
+    // 正确做法：**由 Scaffold 统一消费 insets 并把 padding 用在根容器上**。
+    // 这样所有页面一次性都对，且只算一次（页面内部的 navigationBarsPadding 只用于
+    // 悬浮元素，不再叠加到内容上）。
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.safeDrawing
+    ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // 只取底部：状态栏由各页面的 statusBarsPadding 管（页头要盖到状态栏底下）
                 .padding(bottom = padding.calculateBottomPadding())
         ) {
             when (top) {
@@ -270,7 +295,7 @@ private fun AppRoot(
                             .weight(1f)
                             .fillMaxWidth()
                     ) {
-                        WebDavScreen(vm, webdav, busy)
+                        WebDavScreen(vm, webdav, busy, autoBackupOn)
                     }
                 }
                 // 2026-10-09 用户要求：导入导出 / 账户也改成统计页那样「左上角带返回」的整页
@@ -285,6 +310,7 @@ private fun AppRoot(
                         categoryCount = categories.size,
                         onClearData = vm::clearAllData,
                         onImportCsv = vm::importCsv,
+                        onImportThirdParty = vm::importThirdParty,
                         onImportJson = vm::restoreFromJson,
                         onExportJson = { uri -> vm.exportToUri(uri) },
                         onExportCsv = { uri -> vm.exportCsv(uri) },
@@ -342,7 +368,11 @@ private fun AppRoot(
                     onOpenIo = { stack = stack + Overlay.IO },
                     onOpenTheme = { showTheme = true },
                     onOpenAbout = { showAbout = true },
-                    onOpenAccounts = { stack = stack + Overlay.ACCOUNT }
+                    onOpenAccounts = { stack = stack + Overlay.ACCOUNT },
+                    accounts = accounts,
+                    onBulkAssign = { ids, accId -> vm.bulkAssignAccount(ids, accId) },
+                    onBulkRecategorize = { ids, catId -> vm.bulkRecategorize(ids, catId) },
+                    categoriesForPick = categories
                 )
             }
 

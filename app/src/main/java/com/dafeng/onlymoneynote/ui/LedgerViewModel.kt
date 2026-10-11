@@ -12,6 +12,7 @@ import com.dafeng.onlymoneynote.data.local.CategoryEntity
 import com.dafeng.onlymoneynote.data.local.CategoryStat
 import com.dafeng.onlymoneynote.data.local.TxType
 import com.dafeng.onlymoneynote.data.local.TransactionEntity
+import com.dafeng.onlymoneynote.data.local.TransferWithAccount
 import com.dafeng.onlymoneynote.data.local.TxWithCategory
 import com.dafeng.onlymoneynote.data.ocr.ReceiptParser
 import com.dafeng.onlymoneynote.data.repo.BackupRepository
@@ -143,7 +144,15 @@ class LedgerViewModel @Inject constructor(
     fun deleteAccount(id: Long) {
         if (id == AccountEntity.UNSPECIFIED_ID) { showToast("「未指定」不能删除"); return }
         viewModelScope.launch {
+            // 两个方向都要处理：
+            // 1) accountId = 这个账户的账单（它作为转出方/收支账户）
+            // 2) toAccountId = 这个账户的转账（它作为**转入方**）
+            //
+            // 之前只处理了第 1 个。删掉某笔转账的转入账户之后，
+            // 那笔转账在列表里会渲染成「甲 → 」（toAccountName 查不到变空串），
+            // 看着像数据坏了。备份恢复路径本来就做了这个兜底，删除路径漏了。
             ledger.moveTransactionsToAccount(id, AccountEntity.UNSPECIFIED_ID)
+            ledger.clearToAccount(id)
             ledger.deleteAccount(id)
             if (settings.lastUsed.first().accountId == id) {
                 settings.saveLastUsed(
@@ -153,6 +162,22 @@ class LedgerViewModel @Inject constructor(
                 )
             }
             showToast("已删除，账单已转到「未指定」")
+        }
+    }
+
+    /**
+     * 批量把选中的一批账单改到某个账户下。
+     *
+     * 账单一多（比如迁移前的老账单全挂在「未指定」）就只能靠这个整理：
+     * 账单页多选 → 「设为账户」，一条 SQL 改完，不走逐条编辑。
+     */
+    fun bulkAssignAccount(ids: List<Long>, accountId: Long) {
+        if (ids.isEmpty()) { showToast("还没选中账单"); return }
+        val name = accounts.value.firstOrNull { it.id == accountId }?.name ?: "该账户"
+        viewModelScope.launch {
+            val n = ledger.assignTransactionsToAccount(ids, accountId)
+            refreshWidgets()
+            showToast("已把 $n 笔归到「$name」")
         }
     }
 
@@ -177,9 +202,15 @@ class LedgerViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     /** 支出、收入合计（分） */
+    /**
+     * 支出、收入合计（分）。
+     *
+     * 之前这里 `.combine(MutableStateFlow(Unit))` —— 第二个 flow 的值根本没用，
+     * 只是为了多触发一次重算，白白让每次订阅多收一个值。直接 map 就够了。
+     */
     val summary: StateFlow<Pair<Long, Long>> =
         ledger.observeMonthSummary()
-            .combine(MutableStateFlow(Unit)) { list, _ ->
+            .map { list ->
                 val expense = list.firstOrNull { it.type == TxType.EXPENSE.value }?.totalCents ?: 0L
                 val income = list.firstOrNull { it.type == TxType.INCOME.value }?.totalCents ?: 0L
                 expense to income
@@ -191,6 +222,11 @@ class LedgerViewModel @Inject constructor(
             viewModelScope, SharingStarted.WhileSubscribed(5000),
             SettingsRepository.WebDavSettings()
         )
+
+    /** 自动备份开关状态，供「云端备份」页那个 Switch 用 */
+    val autoBackupOn: StateFlow<Boolean> =
+        settings.autoBackup.map { it.enabled }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     /** 应用设置（配色等） */
     val appSettings: StateFlow<SettingsRepository.AppSettings> =
@@ -301,19 +337,34 @@ class LedgerViewModel @Inject constructor(
                 RangeMode.YEAR -> yearRange(year)
             }
             // 趋势条：月模式看该年内 12 个月；季模式看该年内 4 个季度；年模式看近 5 年
+            //
+            // ⚠️ 这里原来写的是 `combine(rangeFlow, observeRange(start, end)) { all, _ -> }`：
+            // 第二个 flow 的值**被丢弃**，纯粹为了「账单在区间内变了也重算一次」，
+            // 属于冗余订阅 —— rangeFlow 本来就覆盖了全年，区间内变了一定会触发它。
+            //
+            // 更要紧的是里面 `(1..12).map { all.filter{...} }`：每个桶都全表扫一遍，
+            // 8000 条就是 12 × 8000 = 96000 次比较，而账单一变就重来一次。
+            // 现在用 [bucketBy] 一次线性遍历分桶，O(n) 而不是 O(n × 桶数)。
             val barsSource: kotlinx.coroutines.flow.Flow<List<BarPoint>> = when (mode) {
                 RangeMode.MONTH -> {
                     val ys = yearRange(year)
                     ledger.observeRange(ys.first, ys.second).let { rangeFlow ->
                         combine(rangeFlow, ledger.observeRange(start, end)) { all, _ ->
+                            val buckets = HashMap<Int, Pair<Long, Long>>()
+                            all.forEach { tx ->
+                                val m = Calendar.getInstance().apply {
+                                    timeInMillis = tx.dateMillis
+                                }.get(Calendar.MONTH) + 1
+                                val old = buckets[m] ?: 0L to 0L
+                                buckets[m] = when (tx.type) {
+                                    TxType.EXPENSE.value -> old.first + tx.amountCents to old.second
+                                    TxType.INCOME.value -> old.first to old.second + tx.amountCents
+                                    else -> old
+                                }
+                            }
                             (1..12).map { m ->
-                                val (s, e) = monthRange(year, m)
-                                val inMonth = all.filter { it.dateMillis in s until e }
-                                BarPoint(
-                                    label = "${m}月",
-                                    expense = inMonth.filter { it.type == TxType.EXPENSE.value }.sumOf { it.amountCents },
-                                    income = inMonth.filter { it.type == TxType.INCOME.value }.sumOf { it.amountCents }
-                                )
+                                val (e, i) = buckets[m] ?: 0L to 0L
+                                BarPoint(label = "${m}月", expense = e, income = i)
                             }
                         }
                     }
@@ -322,14 +373,21 @@ class LedgerViewModel @Inject constructor(
                     val ys = yearRange(year)
                     ledger.observeRange(ys.first, ys.second).let { rangeFlow ->
                         combine(rangeFlow, ledger.observeRange(start, end)) { all, _ ->
+                            val buckets = HashMap<Int, Pair<Long, Long>>()
+                            all.forEach { tx ->
+                                val c = Calendar.getInstance().apply { timeInMillis = tx.dateMillis }
+                                // 季度 = 月份落在哪一段
+                                val q = c.get(Calendar.MONTH) / 3 + 1
+                                val old = buckets[q] ?: 0L to 0L
+                                buckets[q] = when (tx.type) {
+                                    TxType.EXPENSE.value -> old.first + tx.amountCents to old.second
+                                    TxType.INCOME.value -> old.first to old.second + tx.amountCents
+                                    else -> old
+                                }
+                            }
                             (1..4).map { q ->
-                                val (s, e) = quarterRange(year, q)
-                                val inQ = all.filter { it.dateMillis in s until e }
-                                BarPoint(
-                                    label = "Q$q",
-                                    expense = inQ.filter { it.type == TxType.EXPENSE.value }.sumOf { it.amountCents },
-                                    income = inQ.filter { it.type == TxType.INCOME.value }.sumOf { it.amountCents }
-                                )
+                                val (e, i) = buckets[q] ?: 0L to 0L
+                                BarPoint(label = "Q$q", expense = e, income = i)
                             }
                         }
                     }
@@ -339,14 +397,21 @@ class LedgerViewModel @Inject constructor(
                     val (s, e) = yearRange(startY).first to yearRange(year).second
                     ledger.observeRange(s, e).let { rangeFlow ->
                         combine(rangeFlow, ledger.observeRange(start, end)) { all, _ ->
+                            val buckets = HashMap<Int, Pair<Long, Long>>()
+                            all.forEach { tx ->
+                                val y = Calendar.getInstance().apply {
+                                    timeInMillis = tx.dateMillis
+                                }.get(Calendar.YEAR)
+                                val old = buckets[y] ?: 0L to 0L
+                                buckets[y] = when (tx.type) {
+                                    TxType.EXPENSE.value -> old.first + tx.amountCents to old.second
+                                    TxType.INCOME.value -> old.first to old.second + tx.amountCents
+                                    else -> old
+                                }
+                            }
                             (startY..year).map { y ->
-                                val (ys, ye) = yearRange(y)
-                                val inY = all.filter { it.dateMillis in ys until ye }
-                                BarPoint(
-                                    label = "$y",
-                                    expense = inY.filter { it.type == TxType.EXPENSE.value }.sumOf { it.amountCents },
-                                    income = inY.filter { it.type == TxType.INCOME.value }.sumOf { it.amountCents }
-                                )
+                                val (ey, iy) = buckets[y] ?: 0L to 0L
+                                BarPoint(label = "$y", expense = ey, income = iy)
                             }
                         }
                     }
@@ -580,7 +645,12 @@ class LedgerViewModel @Inject constructor(
         dateMillis: Long,
         note: String,
         reimbursed: Boolean = false,
-        accountId: Long = AccountEntity.UNSPECIFIED_ID
+        accountId: Long = AccountEntity.UNSPECIFIED_ID,
+        /**
+         * 转账的转入方。非转账一律 0。
+         * 之前这个参数根本不存在，所以**把类型改成转账走 update 路径时转入方必丢**。
+         */
+        toAccountIdArg: Long = 0L
     ) {
         val amount = parseAmountToCents(amountYuan)
         if (amount == null || amount <= 0) {
@@ -588,6 +658,9 @@ class LedgerViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
+            // createdAt 必须带回：不带的话 TransactionEntity 会走默认值
+            // System.currentTimeMillis()，等于每编辑一次就把「创建于」改成现在。
+            val old = transactions.value.firstOrNull { it.id == id }
             ledger.updateTransaction(
                 TransactionEntity(
                     id = id,
@@ -596,8 +669,14 @@ class LedgerViewModel @Inject constructor(
                     categoryId = categoryId,
                     dateMillis = dateMillis,
                     note = note.trim(),
+                    createdAt = old?.createdAt ?: System.currentTimeMillis(),
                     reimbursed = reimbursed,
-                    accountId = accountId
+                    accountId = accountId,
+                    // 从转账改成支出时要把 toAccountId 清零，否则这条账单
+                    // 还留着旧转入方的指向，转账页会渲染出一条幽灵转账
+                    toAccountId = if (type == TxType.TRANSFER) {
+                        toAccountIdArg
+                    } else 0L
                 )
             )
             refreshWidgets()
@@ -631,6 +710,121 @@ class LedgerViewModel @Inject constructor(
             showToast("分类已添加")
         }
     }
+
+    /**
+     * 记一笔转账：钱从 [fromAccountId] 挪到 [toAccountId]。
+     *
+     * 转账不是收入也不是支出，所以**不写 categoryId**（存 0）、
+     * 不参与任何收支统计、也不进报销。但它必须影响两个账户的余额，
+     * 否则「银行卡转 500 到支付宝」这件事在 App 里根本记不下来，
+     * 支付宝的余额会莫名其妙变负 —— 这正是用户 8000 条老账单遇到的问题。
+     */
+    fun addTransfer(
+        amountYuan: String,
+        fromAccountId: Long,
+        toAccountId: Long,
+        dateMillis: Long,
+        note: String
+    ) {
+        val amount = parseAmountToCents(amountYuan)
+        if (amount == null || amount <= 0) {
+            showToast("金额填写不对，检查一下")
+            return
+        }
+        if (fromAccountId == toAccountId) {
+            showToast("转出和转入是同一个账户，这不算转账")
+            return
+        }
+        viewModelScope.launch {
+            ledger.addTransaction(
+                TransactionEntity(
+                    amountCents = amount,
+                    type = TxType.TRANSFER.value,
+                    categoryId = 0L,
+                    dateMillis = dateMillis,
+                    note = note.trim(),
+                    accountId = fromAccountId,
+                    toAccountId = toAccountId
+                )
+            )
+            val from = accounts.value.firstOrNull { it.id == fromAccountId }?.name ?: "转出账户"
+            val to = accounts.value.firstOrNull { it.id == toAccountId }?.name ?: "转入账户"
+            refreshWidgets()
+            showToast("已记转账 $from → $to")
+        }
+    }
+
+    /**
+     * 批量把选中的一批账单改到某个分类下。
+     *
+     * 跟 [bulkAssignAccount] 一样只改一列。分类批量改动比改账户更容易点错
+     * （一次几百笔的统计全变），所以 UI 上走了**两步确认**才调到这里。
+     */
+    fun bulkRecategorize(ids: List<Long>, categoryId: Long) {
+        if (ids.isEmpty()) { showToast("还没选中账单"); return }
+        val name = categories.value.firstOrNull { it.id == categoryId }?.name ?: "该分类"
+        viewModelScope.launch {
+            val n = ledger.assignTransactionsToCategory(ids, categoryId)
+            refreshWidgets()
+            showToast("已把 $n 笔改成「$name」")
+        }
+    }
+
+    /**
+     * 改一笔已有的转账。
+     *
+     * 之前没有这个方法，`save()` 里转账分支一律走 [addTransfer]（纯 insert），
+     * 导致「长按转账改金额保存」会新增一条而不是改原来那条。
+     * 转入方 [toAccountId] 必须一起写回去，否则编辑一次就把转入账户丢了。
+     *
+     * 校验跟新增保持一致：转出转入不能是同一个账户。
+     */
+    fun updateTransfer(
+        id: Long,
+        amountYuan: String,
+        fromAccountId: Long,
+        toAccountId: Long,
+        dateMillis: Long,
+        note: String
+    ) {
+        val amount = parseAmountToCents(amountYuan)
+        if (amount == null || amount <= 0) {
+            showToast("金额填写不对，检查一下")
+            return
+        }
+        if (fromAccountId == toAccountId) {
+            showToast("转出和转入是同一个账户，这不算转账")
+            return
+        }
+        viewModelScope.launch {
+            val old = transactions.value.firstOrNull { it.id == id }
+            ledger.updateTransaction(
+                TransactionEntity(
+                    id = id,
+                    amountCents = amount,
+                    type = TxType.TRANSFER.value,
+                    // 转账没有分类，统一 0
+                    categoryId = 0L,
+                    dateMillis = dateMillis,
+                    note = note.trim(),
+                    // 保持原来的创建时间，别把「创建于」改成现在
+                    createdAt = old?.createdAt ?: System.currentTimeMillis(),
+                    reimbursed = false,
+                    accountId = fromAccountId,
+                    toAccountId = toAccountId
+                )
+            )
+            refreshWidgets()
+            val from = accounts.value.firstOrNull { it.id == fromAccountId }?.name ?: "转出账户"
+            val to = accounts.value.firstOrNull { it.id == toAccountId }?.name ?: "转入账户"
+            showToast("已改：$from → $to")
+        }
+    }
+
+    /** 全部转账，单独一页看（不进账单列表，但用户得能查自己记过什么） */
+    val transfers: StateFlow<List<TransferWithAccount>> =
+        ledger.observeTransfers()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun deleteCategory(c: CategoryEntity) {
         val hasChildren = categories.value.any { it.parentId == c.id }
@@ -757,7 +951,10 @@ class LedgerViewModel @Inject constructor(
                 val list = ledger.observeTransactions().first()
                 val bytes = com.dafeng.onlymoneynote.data.exporter.CsvExporter
                     .build(list).toByteArray(Charsets.UTF_8)
-                appContext.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                // 同样是 "wt"（写 + 截断），理由跟 exportToUri 完全一样：
+                // 不显式截断的话，重复导出到同一个文件名时尾部会残留上一份的零头，
+                // 这份 CSV 再导回来就会解析错行。这个坑 JSON 那边已经踩过。
+                appContext.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
                     ?: throw IOException("无法写入选定的文件，换个位置再试")
                 bytes.size to list.size
             }
@@ -810,20 +1007,156 @@ class LedgerViewModel @Inject constructor(
         _busy.value = true
         viewModelScope.launch {
             try {
-                val plan = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val (rows, rawTransfers) = kotlinx.coroutines.withContext(
+                    kotlinx.coroutines.Dispatchers.Default
+                ) {
                     com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter
-                        .buildPlan(com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter.decode(bytes))
+                        .parseWithTransfers(
+                            com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter.decode(bytes)
+                        )
                 }
-                if (plan.txs.isEmpty()) {
+                val plan = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter.buildPlanFromRows(rows)
+                }
+                if (plan.txs.isEmpty() && rawTransfers.isEmpty()) {
                     _toast.value = "这个文件里没解析出账单，确认是记账软件导出的 CSV"
                     return@launch
                 }
-                val newCats = ledger.importPlan(plan)
+                val newCats = if (plan.txs.isEmpty()) 0 else ledger.importPlan(plan)
+                // 转账单独落：没有分类、也不该混在 importPlan 里
+                // （importPlan 是按分类名反查 id 的，转账 categoryId 恒为 0）
+                var txCount = plan.txs.size
+                var skippedTx = 0
+                rawTransfers.forEach { t ->
+                    val from = ledger.findAccountByName(t.fromAccountName)
+                    val to = ledger.findAccountByName(t.toAccountName)
+                    if (from == null || to == null || from == to) {
+                        skippedTx++
+                        return@forEach
+                    }
+                    ledger.addTransaction(
+                        TransactionEntity(
+                            amountCents = t.cents,
+                            type = TxType.TRANSFER.value,
+                            categoryId = 0L,
+                            dateMillis = t.dateMillis,
+                            note = t.note,
+                            accountId = from,
+                            toAccountId = to
+                        )
+                    )
+                    txCount++
+                }
                 refreshWidgets()
-                _toast.value = if (newCats > 0)
-                    "已导入 ${plan.txs.size} 笔账单，新增 $newCats 个分类"
-                else
-                    "已导入 ${plan.txs.size} 笔账单，分类全部命中、未改动"
+                val parts = mutableListOf("已导入 $txCount 笔账单")
+                if (newCats > 0) parts.add("新增 $newCats 个分类")
+                if (skippedTx > 0) {
+                    parts.add("$skippedTx 笔转账因账户对不上已跳过")
+                }
+                _toast.value = parts.joinToString("，")
+            } catch (e: Exception) {
+                _toast.value = "导入失败：${e.message}"
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    /**
+     * 每天第一次打开 App 自动备份一次。
+     *
+     * 2026-10-11 用户要求。几个刻意的设计：
+     * - **只在成功后才记「今天已备份」**，失败不写，所以下次打开还会重试；
+     * - **默认关闭**，需要用户在「云端备份」页自己打开 —— App 平时完全不联网的
+     *   承诺不能因为加了这个功能就破掉，不然用户会莫名其妙看到流量消耗；
+     * - **没配 WebDAV 直接跳过**，不报错；
+     * - 成功后只发一条**最低重要性**的通知（不响不震），见 [BackupNotifier]。
+     */
+    fun runDailyAutoBackupIfNeeded() {
+        viewModelScope.launch {
+            val dav = webDavSettings.value
+            if (!dav.isConfigured) return@launch
+            val auto = settings.autoBackup.first()
+            val today = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.CHINA)
+                .format(java.util.Date())
+            if (!auto.shouldRunToday(today)) return@launch
+
+            _busy.value = true
+            val result = backup.upload(dav.toClientConfig(), deviceNameForBackup())
+            _busy.value = false
+            result.onSuccess {
+                settings.markAutoBackupDone(today)
+                com.dafeng.onlymoneynote.util.BackupNotifier
+                    .notifyBackupOk(appContext, transactions.value.size)
+            }
+            // 失败：不写标记（下次还会试），也不通知（不打扰）。
+            // 密码错这类问题在「云端备份」页手动试一次就能看到。
+        }
+    }
+
+    fun setAutoBackupEnabled(on: Boolean) {
+        viewModelScope.launch {
+            settings.saveAutoBackupEnabled(on)
+            showToast(if (on) "已开启每天自动备份" else "已关闭每天自动备份")
+        }
+    }
+
+    /** 备份文件里记的「这台设备叫什么」，自动备份沿用同一套 */
+    private fun deviceNameForBackup(): String =
+        runCatching { android.os.Build.MODEL ?: "" }.getOrDefault("").ifBlank { "Android" }
+
+    /**
+     * 导入第三方记账软件（钱迹等）的账单。
+     *
+     * 和 [importCsv] 的区别只在**解析层**：解析完同样得到
+     * [com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter.Plan]，
+     * 所以「清空重建、分类只补缺不覆盖」那一套复用现成逻辑，不重复实现。
+     *
+     * 多了一件事：**转账要单独落**。钱迹把转账放在「账户1 → 账户2」，
+     * 跟收支不是一回事，漏掉的话账户余额会算不准 —— 而这正是用户迁移数据
+     * 最在意的东西（总资产 / 单账户余额）。
+     */
+    fun importThirdParty(kind: com.dafeng.onlymoneynote.ui.screens.ThirdPartyKind, bytes: ByteArray) {
+        _busy.value = true
+        viewModelScope.launch {
+            try {
+                val parsed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    com.dafeng.onlymoneynote.ui.screens.ThirdPartyImportSupport.parse(kind, bytes)
+                }
+                if (parsed.rows.isEmpty() && parsed.transfers.isEmpty()) {
+                    _toast.value = "这个文件里没解析出账单，确认是 ${kind.label} 导出的账单明细"
+                    return@launch
+                }
+                val plan = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    com.dafeng.onlymoneynote.ui.screens.ThirdPartyImportSupport.planOf(parsed)
+                }
+                // 转账要往账单表里插，但分类 id 是 0，绕开 importPlan 那套
+                // （它按分类名反查 id，转账没分类）
+                val transfers = parsed.transfers.mapNotNull { t ->
+                    val from = ledger.findAccountByName(t.fromAccountName)
+                    val to = ledger.findAccountByName(t.toAccountName)
+                    if (from == null || to == null) null
+                    else com.dafeng.onlymoneynote.data.local.TransactionEntity(
+                        amountCents = t.cents,
+                        type = com.dafeng.onlymoneynote.data.local.TxType.TRANSFER.value,
+                        categoryId = 0L,
+                        dateMillis = t.dateMillis,
+                        note = t.note,
+                        accountId = from,
+                        toAccountId = to
+                    )
+                }
+                val newCats = ledger.importPlan(plan)
+                transfers.forEach { ledger.addTransaction(it) }
+                refreshWidgets()
+                val parts = mutableListOf("已导入 ${plan.txs.size} 笔账单")
+                if (transfers.isNotEmpty()) parts.add("${transfers.size} 笔转账")
+                val missTx = parsed.transfers.size - transfers.size
+                if (missTx > 0) {
+                    parts.add("$missTx 笔转账因账户在本机找不到已跳过")
+                }
+                if (newCats > 0) parts.add("新增 $newCats 个分类")
+                _toast.value = parts.joinToString("，")
             } catch (e: Exception) {
                 _toast.value = "导入失败：${e.message}"
             } finally {

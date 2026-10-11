@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [CategoryEntity::class, TransactionEntity::class, AccountEntity::class],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -93,6 +93,35 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_transaction_accountId` ON `transaction` (`accountId`)"
+                )
+            }
+        }
+
+        /**
+         * v5 -> v6：transaction 加 toAccountId，新增「转账」。
+         *
+         * 转账记在 type=2 这一行里：accountId 是转出方，toAccountId 是转入方。
+         *
+         * **老账单一条都不动**：已有的 type 只有 0/1，语义没变，
+         * toAccountId 默认 0（非转账用不到）。所以这次迁移是纯加列，零风险。
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `transaction` ADD COLUMN `toAccountId` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_transaction_toAccountId` ON `transaction` (`toAccountId`)"
+                )
+
+                // 顺手修掉老用户那个手绘微信标：v4→v5 迁移时给「微信」账户插的是
+                // `brand:wechat`（Canvas 近似画），用户反馈看着不像微信，
+                // 已统一改成和支付宝、8 家银行同一套的「微」字 + 微信绿。
+                //
+                // **只按 iconKey 精确匹配**，所以用户自己手动改过的图标、
+                // 名字碰巧叫「微信」的其它账户都不会被误改。
+                db.execSQL(
+                    "UPDATE `account` SET iconKey = 'emoji:微' WHERE iconKey = 'brand:wechat'"
                 )
             }
         }

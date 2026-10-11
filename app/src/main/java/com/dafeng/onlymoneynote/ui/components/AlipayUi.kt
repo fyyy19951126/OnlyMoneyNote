@@ -1,5 +1,7 @@
 package com.dafeng.onlymoneynote.ui.components
 
+import android.app.Activity
+import android.content.ContextWrapper
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -210,25 +213,64 @@ private fun TabItem(
 /* ------------------------------------------------------------------ */
 
 /**
- * 弹层卡片底部要垫多高。
+ * 屏幕（显示区）高度，dp。
  *
- * 这台机器（努比亚一类国产 ROM）的 Dialog 窗口比屏幕还高出一截（实测约 94px），
- * 而 Dialog 内部读到的 navigationBars inset 是 0 —— 只能从 **Activity 的 decorView**
- * 读真实导航条高度，读不到就按 fallback 兜底。不垫的话弹层最后一排内容直接画到
- * 屏幕外（记一笔的键盘最后一排、分类管理的 FAB 都吃过这个亏）。
+ * ⚠️ 这台机器的 **Dialog 窗口比屏幕还高**（实测 2400px 的屏，窗口 2470px 左右）。
+ * 所以弹层容器里**不能**直接用 `fillMaxSize()`：那按窗口高算，卡片底边会掉到
+ * 屏幕外头，底部安全区垫多少都没用（底部导航栏正好压住最后一行）。
+ * 容器高度改用「屏幕高度」，卡片底边就永远贴着屏幕底，再叠加导航栏留白即可。
+ *
+ * 用 `displayMetrics.heightPixels` 而不是 `LocalConfiguration.screenHeightDp`：
+ * 后者在 Dialog 里报的是**窗口**尺寸，正好是被放大的那个值，没法用来纠偏。
  */
 @Composable
-fun rememberSheetBottomInset(fallback: Dp = 44.dp, extra: Dp = 10.dp): Dp {
+fun rememberScreenHeightDp(): Dp {
     val context = LocalContext.current
     val density = LocalDensity.current
     return remember(context, density) {
-        val px = (context as? android.app.Activity)?.window?.decorView?.let { dv ->
-            androidx.core.view.WindowInsetsCompat
-                .toWindowInsetsCompat(dv.rootWindowInsets)
-                .getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
-                .bottom
-        } ?: 0
-        with(density) { maxOf(px.toDp(), fallback) + extra }
+        val act = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
+            .filterIsInstance<Activity>().firstOrNull()
+        (act?.resources?.displayMetrics?.heightPixels
+            ?: context.resources.displayMetrics.heightPixels)
+            .let { with(density) { it.toDp() } }
+    }
+}
+
+/**
+ * 弹层卡片底部要垫多高。
+ *
+ * ⚠️ 由**两项**相加得到，缺一不可（实测 1080×2400 @420dpi 的机器）：
+ *
+ * 1. **状态栏高度**（`statusBar` = 132px）—— 弹层的 Dialog 窗口内容区是**从状态栏
+ *    下方开始**的（实测卡片占 [611, 2531]，而屏幕只有 2400），所以卡片底边天然
+ *    掉到屏幕外 131px。这一段光靠加留白补不回来，必须单独算进去。
+ * 2. **导航栏高度**（`navBar` = 126px，三大金刚键）—— 真正要避开的系统栏。
+ *
+ * ⚠️ 两个值都必须从 **Activity** 的 decorView 读：要把 ContextWrapper 一层层拆到底
+ * 才拿得到（`LocalContext.current` 在 Dialog 里拿到的是 Dialog 自己的 wrapper，
+ * `as? Activity` 永远是 null —— 这就是之前永远只走 44dp 兜底的原因）。
+ *
+ * ⚠️ 也不能用 `WindowInsets.navigationBars`：它在 Dialog 内部实测就是 **0**，
+ * 弹层自己的窗口拿不到系统栏 inset。
+ */
+@Composable
+fun rememberSheetBottomInset(extra: Dp = 4.dp): Dp {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    return remember(context, density) {
+        val act = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
+            .filterIsInstance<Activity>().firstOrNull()
+        val insets = act?.window?.decorView?.let { dv ->
+            androidx.core.view.WindowInsetsCompat.toWindowInsetsCompat(dv.rootWindowInsets)
+        }
+        val statusBar = insets?.getInsets(
+            androidx.core.view.WindowInsetsCompat.Type.statusBars()
+        )?.top ?: 0
+        val navBar = insets?.getInsets(
+            androidx.core.view.WindowInsetsCompat.Type.navigationBars()
+        )?.bottom ?: 0
+        // 窗口掉下去的那截 + 导航栏 + 呼吸位
+        with(density) { (statusBar + navBar).toDp() } + extra
     }
 }
 
@@ -255,10 +297,9 @@ fun SheetDialog(
     containerColor: Color = MaterialTheme.colorScheme.surface,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val density = LocalDensity.current
-    val screenHPx = with(density) {
-        androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx()
-    }
+    // 容器高度锁屏幕、不锁窗口：Dialog 窗口内容区是从状态栏下方开始的，
+    // 用窗口高度会把卡片顶到屏幕外
+    val screenH = rememberScreenHeightDp()
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -267,7 +308,8 @@ fun SheetDialog(
         LaunchedEffect(Unit) { enter.animateTo(1f, tween(260, easing = FastOutSlowInEasing)) }
         Box(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .height(screenH)
                 .background(Color.Black.copy(alpha = 0.45f * enter.value))
                 .clickable(
                     indication = null,

@@ -751,6 +751,15 @@ fun CategoryIcon(
  * 所以这里用 Canvas 画「两个对话气泡 + 眼睛挖空」的简化形，配色取微信绿 #07C160。
  * 底色由本函数自己画，[com.dafeng.onlymoneynote.ui.components.IconTile] 遇到
  * `brand:` 前缀时不再叠加色块。
+ *
+ * ⚠️ 2026-10-10：这段 Canvas 绘制**已不再被任何预设使用**。
+ * 用户反馈它「不是官方的、是别的模型做的」，看着不像微信。
+ * 现在预设里微信改用 `emoji:微` + 微信绿，跟支付宝（`emoji:支`）和 8 家银行
+ * （`emoji:工/招/…`）**完全同一套风格**，视觉上统一，也彻底避开商标问题。
+ *
+ * 函数本身留着没删：已经存了 `brand:wechat` 的老用户（备份 / CSV 恢复、v4→v5
+ * 迁移时插的种子）改图标前还能正常显示，删了会退化成灰底兜底方块。
+ * 新建账户不会再产生这个 key。
  */
 @Composable
 fun BrandMark(kind: String, size: Dp, modifier: Modifier = Modifier) {

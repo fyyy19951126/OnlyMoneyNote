@@ -115,14 +115,6 @@ fun AccountStatsSheet(
                 }
             }
         }
-
-            Text(
-                "长按账户可编辑或删除",
-                fontSize = 11.5.sp,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
-            )
         }
 
         FloatingActionButton(

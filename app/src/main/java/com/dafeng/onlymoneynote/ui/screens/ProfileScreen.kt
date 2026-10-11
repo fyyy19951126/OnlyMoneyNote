@@ -121,7 +121,7 @@ fun ProfileScreen(
 
                 Spacer(Modifier.height(30.dp))
                 Text(
-                    "OnlyMoneyNote · 让每一笔都有迹可循",
+                    "OnlyMoneyNote · 记账 1.2.0",
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 20.dp),

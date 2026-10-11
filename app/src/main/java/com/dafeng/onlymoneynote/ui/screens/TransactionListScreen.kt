@@ -3,6 +3,7 @@ package com.dafeng.onlymoneynote.ui.screens
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.Orientation
@@ -27,7 +28,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowRightAlt
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Category
@@ -38,6 +41,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.UploadFile
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FloatingActionButton
@@ -64,12 +68,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dafeng.onlymoneynote.data.local.AccountEntity
 import com.dafeng.onlymoneynote.data.local.CategoryEntity
 import com.dafeng.onlymoneynote.data.local.TxType
 import com.dafeng.onlymoneynote.data.local.TxWithCategory
 import com.dafeng.onlymoneynote.ui.LedgerViewModel
 import com.dafeng.onlymoneynote.ui.components.IconTile
 import com.dafeng.onlymoneynote.ui.components.PageHeader
+import com.dafeng.onlymoneynote.ui.components.SheetDialog
 import com.dafeng.onlymoneynote.ui.theme.AppTheme
 import com.dafeng.onlymoneynote.util.AppIcons
 import kotlinx.coroutines.launch
@@ -110,9 +116,21 @@ fun TransactionListScreen(
     onOpenTheme: () -> Unit,
     onOpenAbout: () -> Unit,
     /** 结余行右侧「账户」链接 → 账户统计弹层 */
-    onOpenAccounts: () -> Unit
+    onOpenAccounts: () -> Unit,
+    /** 批量整理用：选账户的弹层要列账户 */
+    accounts: List<AccountEntity>,
+    /** 批量把选中的一批账单改到某个账户下 */
+    onBulkAssign: (ids: List<Long>, accountId: Long) -> Unit,
+    /** 批量把选中的一批账单改到某个分类下（多重确认后才调） */
+    onBulkRecategorize: (ids: List<Long>, categoryId: Long) -> Unit,
+    /** 选分类的弹层要列分类 */
+    categoriesForPick: List<CategoryEntity>
 ) {
     var openedId by remember { mutableStateOf<Long?>(null) }
+    // 改分类的确认流程：null = 没开；1 = 第一步（讲后果）；2 = 第二步（最终确认）
+    var catConfirmStep by remember { mutableStateOf(0) }
+    var pendingCatId by remember { mutableStateOf(0L) }
+    var categorySheet by remember { mutableStateOf(false) }
     val balance = monthIncome - monthExpense
 
     // 记完一笔（或改了日期）把列表拉回顶部：不然顶部数字变了、列表还停在原处，
@@ -124,6 +142,9 @@ fun TransactionListScreen(
     }
 
     // 顶部「支出/收入」点一下筛选：null=全部，否则只显示该类型；再点一次回到全部
+    //
+    // 转账（第三类）**故意不进这个切换**：它是中性事件，塞进来会让「收入」高亮
+    // 和红绿金额的语义全乱。它在「全部」视图里照常显示，点开就看得见。
     var typeFilter by remember { mutableStateOf<Int?>(null) }
     fun toggleType(t: Int) {
         typeFilter = if (typeFilter == t) null else t
@@ -178,6 +199,28 @@ fun TransactionListScreen(
     var lastTitleTap by remember { mutableStateOf(0L) }
     var editingTitle by remember { mutableStateOf(false) }
     var draftTitle by remember { mutableStateOf(appTitle) }
+
+    /* ---------- 批量整理：多选 → 设为账户 ---------- */
+    // 迁移前的老账单全部挂在「未指定」，一条条长按改不现实（用户有 8000 条）。
+    // 配合上面的「筛选」先按分类 / 日期把范围缩小，再全选，一次就能归掉一大片。
+    var selectMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var assignSheet by remember { mutableStateOf(false) }
+
+    fun exitSelect() {
+        selectMode = false
+        selectedIds = emptySet()
+    }
+
+    fun toggleSelect(id: Long) {
+        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+    }
+
+    // 只拿**当前筛选后**的这些条来全选，不然会把没显示的也勾上（用户看不见却被动归类）
+    val allSelected = shown.isNotEmpty() && shown.all { it.id in selectedIds }
+    fun toggleSelectAll() {
+        selectedIds = if (allSelected) emptySet() else shown.map { it.id }.toSet()
+    }
 
     // 分组是纯计算，remember 缓存
     val grouped = remember(shown) {
@@ -317,7 +360,48 @@ fun TransactionListScreen(
                     HeaderLink("账户") { onOpenAccounts() }
                 }
 
-                // 筛选生效时：摘要 + 笔数 + 一键清除
+                // 批量整理：进了多选就在页头补一条选中状态栏（全选 / 退出）。
+                // 放在页头而不是底部，是因为底部要留给「设为账户」这个主操作。
+                if (selectMode) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (selectedIds.isEmpty()) "点账单选中，可多选"
+                            else "已选 " + selectedIds.size + " 笔",
+                            modifier = Modifier.weight(1f),
+                            fontSize = 11.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = Color.White.copy(alpha = 0.85f)
+                        )
+                        Text(
+                            if (allSelected) "取消全选" else "全选",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { toggleSelectAll() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            color = Color.White
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "退出",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { exitSelect() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            color = Color.White
+                        )
+                    }
+                }
+
+                // 筛选生效时：摘要 + 笔数 + 「整理」入口 + 一键清除
                 if (filter.active) {
                     Spacer(Modifier.height(8.dp))
                     Row(
@@ -330,27 +414,45 @@ fun TransactionListScreen(
                                 .weight(1f)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(Color.White.copy(alpha = 0.18f))
-                                .padding(horizontal = 9.dp, vertical = 4.dp),
-                            fontSize = 11.5.sp,
+                                // 摘要框收窄一点（2026-10-11 用户反馈太占地方），
+                                // 右边腾出位置给「共 X 笔」和「整理」
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                            fontSize = 10.5.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             color = Color.White
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             "共 " + shown.size + " 笔",
-                            fontSize = 11.5.sp,
+                            fontSize = 11.sp,
                             color = Color.White.copy(alpha = 0.8f)
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(6.dp))
+                        // 「整理」跟着筛选走：筛出一批之后顺手改账户/分类最自然，
+                        // 不用退出筛选再点页头那个
+                        Text(
+                            "整理",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.White.copy(alpha = 0.18f))
+                                .clickable {
+                                    if (selectMode) exitSelect() else selectMode = true
+                                }
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                            color = Color.White
+                        )
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             "清除",
-                            fontSize = 11.5.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Medium,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable { filter = HomeFilter() }
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
                             color = Color.White
                         )
                     }
@@ -389,10 +491,14 @@ fun TransactionListScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    // 底部留 96dp：右下角的浮空 ＋ 会盖在列表上，
-                    // 不留够最后几笔就永远点不到
+                    // 底部留白 = 悬浮元素占的那块（FAB 或多选操作条）+ 一点呼吸位。
+                    // **不能写死 dp**：三大金刚键的导航栏比手势小白条高得多，
+                    // 写死 96dp 在有导航栏的机型上不够，最后几笔会被压住。
+                    // MainActivity 那边 Scaffold 已经把 insets 消费掉并垫在根容器上了，
+                    // 这里只负责「悬浮元素之上的那一段」。
                     contentPadding = PaddingValues(
-                        start = 14.dp, end = 14.dp, top = 2.dp, bottom = 96.dp
+                        start = 14.dp, end = 14.dp, top = 2.dp,
+                        bottom = if (selectMode) 76.dp else 100.dp
                     )
                 ) {
                     grouped.forEach { (day, list) ->
@@ -411,6 +517,11 @@ fun TransactionListScreen(
                                 // 别的行正展开着删除时，本行不许点进编辑 ——
                                 // 否则看着像点了 A 行，实际打开的是 B 行
                                 interactive = openedId == null || openedId == tx.id,
+                                // 多选模式下不许左滑：滑开露出的是「删除」，
+                                // 而这时用户想干的是勾选，两种手势混在一起会误删
+                                swipeEnabled = !selectMode,
+                                selectMode = selectMode,
+                                selected = tx.id in selectedIds,
                                 onOpenChange = { open ->
                                     openedId = if (open) tx.id else null
                                 },
@@ -420,7 +531,8 @@ fun TransactionListScreen(
                                     openedId = null
                                     onDelete(txId)
                                 },
-                                onEdit = onEdit
+                                onEdit = onEdit,
+                                onToggleSelect = { toggleSelect(tx.id) }
                             )
                         }
                     }
@@ -429,19 +541,196 @@ fun TransactionListScreen(
         }
       }   // Column
 
-        /* ---------- 右下角浮空「＋」：记一笔 ---------- */
-        FloatingActionButton(
-            onClick = onAdd,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(end = 20.dp, bottom = 24.dp),
-            containerColor = AppTheme.primary,
-            contentColor = Color.White,
-            shape = RoundedCornerShape(18.dp),
-            elevation = FloatingActionButtonDefaults.elevation(6.dp, 8.dp, 8.dp, 10.dp)
-        ) {
-            Icon(Icons.Outlined.Add, "记一笔", modifier = Modifier.size(26.dp))
+        /* ---------- 右下角浮空「＋」：记一笔。多选时收起来，别跟底部操作条抢位置 ---------- */
+        if (!selectMode) {
+            FloatingActionButton(
+                onClick = onAdd,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(end = 20.dp, bottom = 24.dp),
+                containerColor = AppTheme.primary,
+                contentColor = Color.White,
+                shape = RoundedCornerShape(18.dp),
+                elevation = FloatingActionButtonDefaults.elevation(6.dp, 8.dp, 8.dp, 10.dp)
+            ) {
+                Icon(Icons.Outlined.Add, "记一笔", modifier = Modifier.size(26.dp))
+            }
+        }
+
+        /* ---------- 批量整理：底部主操作条 ---------- */
+        if (selectMode) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .navigationBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (selectedIds.isEmpty()) "未选中" else "已选 " + selectedIds.size + " 笔",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "全选",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { toggleSelectAll() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = AppTheme.primary
+                    )
+                    Text(
+                        "退出",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { exitSelect() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                // 两个批量操作并排：改账户 / 改分类。
+                // 改分类比改账户更容易点错（一改就是几百笔的分类全变），
+                // 所以用描边样式区分，并且下面走**两步确认**。
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    BulkActionButton(
+                        text = "设为账户",
+                        primary = true,
+                        enabled = selectedIds.isNotEmpty(),
+                        modifier = Modifier.weight(1f),
+                        onClick = { assignSheet = true }
+                    )
+                    BulkActionButton(
+                        text = "修改分类",
+                        primary = false,
+                        enabled = selectedIds.isNotEmpty(),
+                        modifier = Modifier.weight(1f),
+                        onClick = { categorySheet = true }
+                    )
+                }
+            }
+        }
+
+        /* ---------- 选账户弹层 ---------- */
+        if (assignSheet) {
+            AccountPickerSheet(
+                accounts = accounts,
+                onDismiss = { assignSheet = false },
+                onPick = { accId ->
+                    assignSheet = false
+                    onBulkAssign(selectedIds.toList(), accId)
+                    exitSelect()
+                }
+            )
+        }
+
+        /* ---------- 选分类弹层（点分类后进入两步确认） ---------- */
+        if (categorySheet) {
+            CategoryPickerSheet(
+                categories = categoriesForPick,
+                onDismiss = { categorySheet = false },
+                onPick = { catId ->
+                    categorySheet = false
+                    pendingCatId = catId
+                    catConfirmStep = 1
+                }
+            )
+        }
+
+        /* ---------- 改分类的两步确认 ---------- */
+        if (catConfirmStep > 0) {
+            val target = categoriesForPick.firstOrNull { it.id == pendingCatId }
+            val targetName = target?.let { c ->
+                val parent = categoriesForPick.firstOrNull { it.id == c.parentId }
+                listOfNotNull(parent?.name, c.name).joinToString(" · ")
+            } ?: "该分类"
+            val count = selectedIds.size
+            if (catConfirmStep == 1) {
+                AlertDialog(
+                    onDismissRequest = { catConfirmStep = 0 },
+                    shape = RoundedCornerShape(24.dp),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    title = {
+                        Text("把 $count 笔改成「$targetName」？", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    },
+                    text = {
+                        Text(
+                            "这 $count 笔账单的分类会**全部**变成「$targetName」。\n\n" +
+                                "金额、时间、备注、账户都不动，只改分类。\n" +
+                                "改错了可以再改回来，但批量操作一次就是几百笔，请确认选对了。",
+                            fontSize = 13.5.sp,
+                            lineHeight = 20.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    confirmButton = {
+                        Text(
+                            "确定，继续",
+                            color = AppTheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clickable { catConfirmStep = 2 }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    },
+                    dismissButton = {
+                        Text(
+                            "取消",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.clickable { catConfirmStep = 0 }.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                )
+            } else {
+                AlertDialog(
+                    onDismissRequest = { catConfirmStep = 0 },
+                    shape = RoundedCornerShape(24.dp),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    title = {
+                        Text("最后确认", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = AppTheme.primary)
+                    },
+                    text = {
+                        Text(
+                            "再确认一次：\n\n" +
+                                "**$count 笔**账单的分类 → **$targetName**\n\n" +
+                                "点下面这个按钮才会真的执行。",
+                            fontSize = 14.sp,
+                            lineHeight = 21.sp
+                        )
+                    },
+                    confirmButton = {
+                        Text(
+                            "就是它，改",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(AppTheme.primary)
+                                .clickable {
+                                    onBulkRecategorize(selectedIds.toList(), pendingCatId)
+                                    catConfirmStep = 0
+                                    exitSelect()
+                                }
+                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                        )
+                    },
+                    dismissButton = {
+                        Text(
+                            "我点错了",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.clickable { catConfirmStep = 0 }.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                )
+            }
         }
         /* ---------- 筛选弹层 ---------- */
         if (filterSheet) {
@@ -593,9 +882,14 @@ internal fun SwipeableTxRow(
     isOpen: Boolean,
     /** false 时整行不响应点击（别的行正展开着删除）。滑动仍然可用。 */
     interactive: Boolean = true,
+    /** 多选模式下关掉左滑：这时用户想勾选，滑开露出删除键容易误触。 */
+    swipeEnabled: Boolean = true,
+    selectMode: Boolean = false,
+    selected: Boolean = false,
     onOpenChange: (Boolean) -> Unit,
     onDelete: (Long) -> Unit,
-    onEdit: (TxWithCategory) -> Unit
+    onEdit: (TxWithCategory) -> Unit,
+    onToggleSelect: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -609,31 +903,40 @@ internal fun SwipeableTxRow(
             offsetX.animateTo(target, tween(180))
         }
     }
+    // 进多选时把还展开着的那一行收回去，别留一条张着的红色删除带
+    LaunchedEffect(selectMode) {
+        if (selectMode && offsetX.value != 0f) {
+            offsetX.animateTo(0f, tween(180))
+            onOpenChange(false)
+        }
+    }
 
     Box(modifier = Modifier.fillMaxWidth()) {
-        // ---- 底层：删除按钮（平时被上面的不透明行完全盖住） ----
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .clip(RoundedCornerShape(14.dp))
-                .background(AppTheme.danger),
-            contentAlignment = Alignment.CenterEnd
-        ) {
-            Row(
+        // ---- 底层：删除按钮（平时被上面的不透明行完全盖住）。多选时不画，避免误触 ----
+        if (!selectMode) {
+            Box(
                 modifier = Modifier
-                    .padding(end = 24.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onDelete(tx.id) }
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(AppTheme.danger),
+                contentAlignment = Alignment.CenterEnd
             ) {
-                Icon(
-                    Icons.Outlined.DeleteOutline, "删除",
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("删除", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                Row(
+                    modifier = Modifier
+                        .padding(end = 24.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onDelete(tx.id) }
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Outlined.DeleteOutline, "删除",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("删除", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                }
             }
         }
 
@@ -641,29 +944,41 @@ internal fun SwipeableTxRow(
         Box(
             modifier = Modifier
                 .offset { IntOffset(offsetX.value.roundToInt(), 0) }
-                .draggable(
-                    orientation = Orientation.Horizontal,
-                    state = rememberDraggableState { delta ->
-                        scope.launch {
-                            offsetX.snapTo((offsetX.value + delta).coerceIn(-revealPx, 0f))
-                        }
-                    },
-                    onDragStopped = {
-                        val shouldOpen = offsetX.value < -revealPx * 0.4f
-                        offsetX.animateTo(if (shouldOpen) -revealPx else 0f, tween(180))
-                        onOpenChange(shouldOpen)
+                .then(
+                    if (!swipeEnabled) {
+                        Modifier
+                    } else {
+                        Modifier.draggable(
+                            orientation = Orientation.Horizontal,
+                            state = rememberDraggableState { delta ->
+                                scope.launch {
+                                    offsetX.snapTo((offsetX.value + delta).coerceIn(-revealPx, 0f))
+                                }
+                            },
+                            onDragStopped = {
+                                val shouldOpen = offsetX.value < -revealPx * 0.4f
+                                offsetX.animateTo(if (shouldOpen) -revealPx else 0f, tween(180))
+                                onOpenChange(shouldOpen)
+                            }
+                        )
                     }
                 )
         ) {
             TxRow(
                 tx = tx,
-                interactive = interactive,
-                onEdit = {
-                    if (offsetX.value != 0f) {
-                        scope.launch { offsetX.animateTo(0f, tween(180)) }
-                        onOpenChange(false)
+                interactive = interactive && !selectMode,
+                selectMode = selectMode,
+                selected = selected,
+                onClick = {
+                    if (selectMode) {
+                        onToggleSelect()
                     } else {
-                        onEdit(tx)
+                        if (offsetX.value != 0f) {
+                            scope.launch { offsetX.animateTo(0f, tween(180)) }
+                            onOpenChange(false)
+                        } else {
+                            onEdit(tx)
+                        }
                     }
                 }
             )
@@ -675,7 +990,9 @@ internal fun SwipeableTxRow(
 private fun TxRow(
     tx: TxWithCategory,
     interactive: Boolean = true,
-    onEdit: (TxWithCategory) -> Unit
+    selectMode: Boolean = false,
+    selected: Boolean = false,
+    onClick: () -> Unit
 ) {
     val isExpense = tx.type == TxType.EXPENSE.value
     val color = AppTheme.byType(isExpense)
@@ -686,10 +1003,15 @@ private fun TxRow(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(enabled = interactive) { onEdit(tx) }
+            .clickable(enabled = interactive || selectMode) { onClick() }
             .padding(start = 4.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 多选时在最左边让出一个勾选圈，不然勾选和「点开编辑」两件事分不清
+        if (selectMode) {
+            SelectTick(selected)
+            Spacer(Modifier.width(11.dp))
+        }
         // 彩色分类图标块（支付宝式）：一级分类自定义了配色就跟着走
         IconTile(
             iconKey = tx.iconKey,
@@ -699,14 +1021,26 @@ private fun TxRow(
         )
         Spacer(Modifier.width(13.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = listOfNotNull(tx.parentName, tx.categoryName)
-                    .distinct()
-                    .joinToString(" · "),
-                fontWeight = FontWeight.Medium,
-                fontSize = 15.sp,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+            if (tx.type == TxType.TRANSFER.value) {
+                // 转账没分类，标题位置写「从哪转到哪」，比光一个分类名有意义
+                Text(
+                    text = "${tx.accountName} → ${tx.toAccountName}",
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            } else {
+                Text(
+                    text = listOfNotNull(tx.parentName, tx.categoryName)
+                        .distinct()
+                        .joinToString(" · "),
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = timeLabel(tx.dateMillis),
@@ -740,24 +1074,244 @@ private fun TxRow(
             }
         }
         Spacer(Modifier.width(8.dp))
+        // 转账中性显示：不带 +/- 前缀，也不染红绿 —— 它既不是花钱也不是进账
+        val isTransfer = tx.type == TxType.TRANSFER.value
         Text(
-            text = (if (isExpense) "-¥" else "+¥") + LedgerViewModel.formatCents(tx.amountCents),
+            text = (when {
+                isTransfer -> ""
+                isExpense -> "-¥"
+                else -> "+¥"
+            }) + LedgerViewModel.formatCents(tx.amountCents),
             // 金额右对齐并预留固定宽度：位数不同也不会把右边的账户头像推得左右跳
             modifier = Modifier.widthIn(min = 104.dp),
             textAlign = TextAlign.End,
             maxLines = 1,
-            color = color,
+            color = if (isTransfer) AppTheme.primary else color,
             fontWeight = FontWeight.Bold,
             fontSize = 15.sp
         )
         Spacer(Modifier.width(8.dp))
-        // 账户头像放金额右边，整列靠齐
-        IconTile(
-            iconKey = tx.accountIconKey,
-            size = 22.dp,
-            cornerRadius = 7.dp,
-            overrideColor = AppIcons.colorFromKey(tx.accountColorKey)
+        // 转账：左边转出账户头像 + 箭头 + 右边转入账户头像，不显示分类图标
+        // （转账没有分类）。收支账单才显示单个账户头像。
+        if (tx.type == TxType.TRANSFER.value) {
+            IconTile(
+                iconKey = tx.accountIconKey,
+                size = 20.dp,
+                cornerRadius = 6.dp,
+                overrideColor = AppIcons.colorFromKey(tx.accountColorKey)
+            )
+            Icon(
+                Icons.AutoMirrored.Outlined.ArrowRightAlt,
+                contentDescription = "转到",
+                modifier = Modifier.padding(horizontal = 2.dp).size(15.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            IconTile(
+                iconKey = tx.toAccountIconKey.ifBlank { "emoji:💳" },
+                size = 20.dp,
+                cornerRadius = 6.dp,
+                overrideColor = AppIcons.colorFromKey(tx.toAccountColorKey)
+            )
+        } else {
+            IconTile(
+                iconKey = tx.accountIconKey,
+                size = 22.dp,
+                cornerRadius = 7.dp,
+                overrideColor = AppIcons.colorFromKey(tx.accountColorKey)
+            )
+        }
+    }
+}
+
+/**
+ * 多选模式的勾选圈。
+ *
+ * 用 Box 画而不是 Material 的 CheckCircle —— 少一个依赖，
+ * 而且空心/实心两种态都能精确控制描边色，深色模式下也不会糊。
+ */
+@Composable
+private fun SelectTick(selected: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(21.dp)
+            .clip(CircleShape)
+            .background(if (selected) AppTheme.primary else Color.Transparent)
+            .border(
+                width = 1.5.dp,
+                color = if (selected) AppTheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                shape = CircleShape
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (selected) {
+            Icon(
+                Icons.Outlined.Check, null,
+                tint = Color.White,
+                modifier = Modifier.size(14.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 批量操作条上的一个按钮。
+ *
+ * [primary] 决定是实心（主操作）还是描边（次要操作）——
+ * 改分类比改账户更容易点错，用样式区分让「设为账户」成为默认的那个。
+ */
+@Composable
+private fun BulkActionButton(
+    text: String,
+    primary: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(20.dp)
+    val bg = when {
+        !enabled -> MaterialTheme.colorScheme.surfaceVariant
+        primary -> AppTheme.primary
+        else -> MaterialTheme.colorScheme.surface
+    }
+    val fg = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        primary -> Color.White
+        else -> AppTheme.primary
+    }
+    Box(
+        modifier = modifier
+            .height(40.dp)
+            .clip(shape)
+            .background(bg)
+            .then(
+                if (enabled && !primary)
+                    Modifier.border(1.dp, AppTheme.primary, shape)
+                else Modifier
+            )
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = fg, maxLines = 1)
+    }
+}
+
+/**
+ * 选分类弹层：一级分组列出，点一级下的二级才选中。
+ *
+ * 只列**二级**（也就是真正挂在账单上的那个粒度）—— 账单本来就都指向二级，
+ * 让用户选一级反而会造成「以为改了、其实只改了一部分」。
+ */
+@Composable
+private fun CategoryPickerSheet(
+    categories: List<CategoryEntity>,
+    onDismiss: () -> Unit,
+    onPick: (Long) -> Unit
+) {
+    SheetDialog(onDismiss = onDismiss, heightFraction = 0.7f) {
+        Text(
+            "改成哪个分类",
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp)
         )
+        Spacer(Modifier.height(10.dp))
+        LazyColumn(contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
+            // 只列出账单可能挂着的二级分类（parentId != null）
+            val parents = categories.filter { it.parentId == null }
+            parents.forEach { parent ->
+                val kids = categories.filter { it.parentId == parent.id }
+                if (kids.isEmpty()) return@forEach
+                item(key = "h-${parent.id}") {
+                    Text(
+                        parent.name,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp)
+                    )
+                }
+                items(kids, key = { it.id }) { c ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onPick(c.id) }
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconTile(
+                            iconKey = c.iconKey,
+                            size = 28.dp,
+                            cornerRadius = 9.dp,
+                            overrideColor = AppIcons.colorFromKey(c.colorKey)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            c.name,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 选账户弹层：列出现有账户，点一下就把选中的那批账单归过去。
+ *
+ * 「未指定」照样列出来 —— 把归错的账单拨回未指定是高频操作，不该被藏起来。
+ * 只列账户本身（名字 + 图标），不显示余额：这里的作用只是「挑一个目的地」。
+ */
+@Composable
+private fun AccountPickerSheet(
+    accounts: List<AccountEntity>,
+    onDismiss: () -> Unit,
+    onPick: (Long) -> Unit
+) {
+    SheetDialog(onDismiss = onDismiss, heightFraction = 0.62f) {
+        Text(
+            "归到哪个账户",
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp)
+        )
+        Spacer(Modifier.height(10.dp))
+        LazyColumn(
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 12.dp)
+        ) {
+            items(accounts, key = { it.id }) { a ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onPick(a.id) }
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconTile(
+                        iconKey = a.iconKey,
+                        size = 34.dp,
+                        cornerRadius = 11.dp,
+                        overrideColor = AppIcons.colorFromKey(a.colorKey)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        a.name,
+                        fontSize = 14.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -780,9 +1334,12 @@ internal fun Long.atDay(): DayLabel {
 internal fun dayTotals(list: List<TxWithCategory>): Pair<Long, Long> {
     var expense = 0L
     var income = 0L
+    // 转账跳过：钱只是在自己账户之间挪位置，当天的收支小计不该被它撑大
     list.forEach {
-        if (it.type == TxType.EXPENSE.value) expense += it.amountCents
-        else income += it.amountCents
+        when (it.type) {
+            TxType.EXPENSE.value -> expense += it.amountCents
+            TxType.INCOME.value -> income += it.amountCents
+        }
     }
     return expense to income
 }

@@ -134,6 +134,33 @@ object ReceiptParser {
         "转账成功", "消费", "支出", "扣款", "付款", "支付"
     )
 
+    /**
+     * 渠道名 —— 它们含「支付」二字，但**不是动作**。
+     *
+     * 2026-10-11 用户反馈：样本首行「微信支付」命中 EXPENSE_WORDS 里的「支付」，
+     * 把一笔**收款**截图直接否成支出。
+     *
+     * 所以判支出前必须先把这些渠道名从文本里**剥掉**，再去找动作词。
+     * 否则「微信支付 / 支付宝 / 云闪付」在每一张支付截图上都必然出现，
+     * 收入永远判不出来。
+     */
+    private val CHANNEL_WORDS = listOf(
+        "微信支付", "支付宝", "云闪付", "闪付", "Apple Pay", "ApplePay",
+        "现金支付", "银联", "信用卡支付", "储蓄卡支付", "零钱", "花呗",
+        "余额宝", "微信零钱", "零钱通"
+    )
+
+    /**
+     * 判断是不是支出。
+     *
+     * 顺序很重要：**先剥渠道名，再找支出动作词**。
+     * 反过来的话「微信支付」里的「支付」会命中，什么收款都判不出来。
+     */
+    private fun looksExpense(text: String): Boolean {
+        val stripped = CHANNEL_WORDS.fold(text) { acc, ch -> acc.replace(ch, "") }
+        return EXPENSE_WORDS.any { stripped.contains(it) }
+    }
+
     // 商户噪音词 —— 命中说明这不是商户名
     private val MERCHANT_NOISE = listOf(
         "支付成功", "交易成功", "付款成功", "转账成功", "已完成", "账单详情",
@@ -281,8 +308,9 @@ object ReceiptParser {
         val amount = pickAmount(lines, hints)
 
         // ---- 收支方向 ----
+        // 支出判定走 [looksExpense]（内部先剥渠道名），不能直接 contains
         val isIncome = INCOME_WORDS.any { text.contains(it) } &&
-            !EXPENSE_WORDS.any { text.contains(it) }
+            !looksExpense(text)
         if (isIncome) hints.add("判断为收入（命中收款类关键词）")
 
         // ---- 日期 ----

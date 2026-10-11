@@ -4,9 +4,21 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!--
+      关掉系统自动备份。
+
+      这个项目对隐私是有意识设计的：WebDAV 密码刻意不写进备份 JSON，
+      App 平时完全不联网。但账单数据库本身是极私密的东西（每一笔花销、
+      商户、账户余额都在里面），而 allowBackup=true 会让它进 Google 云备份
+      和换机迁移 —— 等于把正文交出去了，密码不交反而不一致。
+
+      备份由 App 自己的 WebDAV 负责，用户自己控制服务器，不经过 Google。
+    -->
     <application
         android:name=".OnlyMoneyNoteApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"

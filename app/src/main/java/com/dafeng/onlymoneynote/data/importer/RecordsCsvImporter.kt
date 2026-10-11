@@ -141,17 +141,35 @@ object RecordsCsvImporter {
     )
 
     /** 解析成行；认不出来的行直接跳过，不抛异常（导入不该被一行脏数据打断） */
-    fun parse(text: String): List<RawRow> {
-        val rows = splitCsv(text)
-        if (rows.isEmpty()) return emptyList()
+    fun parse(text: String): List<RawRow> = parseWithTransfers(text).first
+
+    /**
+     * 跟 [parse] 一样，但**把转账也返回**。
+     *
+     * 分开两个出口，是为了让「只要收支」的旧调用点不用改，
+     * 而导入入口（会真正写库的那些）用这个版本，别把转账弄丢。
+     */
+    fun parseWithTransfers(text: String): Pair<List<RawRow>, List<RawTransfer>> {
+        val transfers = ArrayList<RawTransfer>()
+        // BOM 必须在这里也剥一次。之前只在 [decode] 里剥，绕过 decode 直接调
+        // parse 的路径（测试、内存里的文本）就会让首个表头变成「﻿日期」，
+        // `indexOf("日期")` 返回 -1 → 整份文件一行都读不出来，而且毫无提示。
+        val rows = splitCsv(text.removePrefix("\uFEFF"))
+        if (rows.isEmpty()) return emptyList<RawRow>() to transfers
         val header = rows.first().map { it.trim() }
         val iDate = header.indexOf("日期")
         val iType = header.indexOf("收支")
         val iAmount = header.indexOf("金额")
         val iNote = header.indexOf("备注")
         val iReimb = header.indexOf("报销")
-        // 「账户」列：本 App v5 起会导出；大象记账那种表头也有这一列，
-        // 但按名字对不上本机账户时会归「未指定」，不会凭空建账户。
+        // 转账专用列：本 App 导出时把账户列写成「甲 → 乙」，这里拆回两边。
+        // 其他软件的导出通常没有这两列，认不到就都归「未指定」。
+        val iAccFrom = header.indexOf("转出账户")
+        val iAccTo = header.indexOf("转入账户")
+        val iAccArrow = header.indexOf("账户→")
+        // 「账户」列要**精确匹配**：表里同时存在「账户」和「账户→」时，
+        // 必须按「下标」找「账户」，不能用 `indexOf("账户")` ——
+        // 那会先撞上「账户→」，收支行的账户名全读成空。
         val iAccount = header.indexOf("账户")
         // 分类列有两种表头：大象记账的单列「分类名称」，
         // 以及本 App 导出的双列「一级分类 / 二级分类」。二级优先，没有就退到一级。
@@ -159,25 +177,72 @@ object RecordsCsvImporter {
         val iCatL1 = header.indexOf("一级分类")
         val iCatL2 = header.indexOf("二级分类")
         val hasCat = iCatSingle >= 0 || iCatL1 >= 0 || iCatL2 >= 0
-        if (iDate < 0 || !hasCat || iType < 0 || iAmount < 0) return emptyList()
+        if (iDate < 0 || !hasCat || iType < 0 || iAmount < 0) {
+            return emptyList<RawRow>() to transfers
+        }
 
         val out = ArrayList<RawRow>(rows.size)
         rows.drop(1).forEach { r ->
             fun at(i: Int) = if (i >= 0 && i < r.size) r[i].trim() else ""
             val cents = toCents(at(iAmount)) ?: return@forEach
             if (cents <= 0) return@forEach
+            val date = toMillis(at(iDate)) ?: return@forEach
+
+            // ⚠️ 「转账」必须在算 type **之前**分出去。
+            // 之前 `when (at(iType)) { "支出"->0; "收入"->1; else->return@forEach }`
+            // 会把「转账」直接跳过，后面的转账分支根本走不到 —— 而导出侧
+            // 恰恰给转账写的就是「转账」两个字，于是**自己导出的文件自己导不回来，
+            // 转账全没了且没有任何提示**。
+            if (at(iType) == "转账") {
+                // 优先用「转出/转入账户」两列；没有就读「账户→」里的「甲 → 乙」。
+                var from = at(iAccFrom)
+                var to = at(iAccTo)
+                if (from.isBlank() && to.isBlank() && iAccArrow >= 0) {
+                    val raw = at(iAccArrow)
+                    val arrow = raw.indexOf("→")
+                    if (arrow >= 0) {
+                        from = raw.substring(0, arrow).trim()
+                        to = raw.substring(arrow + 1).trim()
+                    }
+                }
+                transfers.add(
+                    RawTransfer(
+                        dateMillis = date,
+                        cents = cents,
+                        note = at(iNote),
+                        fromAccountName = from,
+                        toAccountName = to
+                    )
+                )
+                return@forEach
+            }
+
             val type = when (at(iType)) {
                 "支出" -> 0
                 "收入" -> 1
                 else -> return@forEach
             }
-            val date = toMillis(at(iDate)) ?: return@forEach
             val cat = at(iCatL2).ifBlank { at(iCatSingle) }.ifBlank { at(iCatL1) }.ifBlank { "其他" }
             val reimb = at(iReimb).lowercase() in setOf("是", "1", "y", "yes", "true", "✓")
+
             out.add(RawRow(date, cat, type, cents, at(iNote), reimb, at(iAccount)))
         }
-        return out
+        return out to transfers
     }
+
+    /**
+     * 解析出的一批文件里的转账。
+     *
+     * 跟 [RawRow] 分开是因为转账没有分类、也不该进收支统计，
+     * 混进 RawRow 的话每个统计查询都要记得排除它，漏一处就错。
+     */
+    data class RawTransfer(
+        val dateMillis: Long,
+        val cents: Long,
+        val note: String = "",
+        val fromAccountName: String = "",
+        val toAccountName: String = ""
+    )
 
     private fun toCents(s: String): Long? {
         if (s.isBlank()) return null
@@ -276,8 +341,16 @@ object RecordsCsvImporter {
      * 生成导入方案：只看**文件里真实出现过**的分类名，
      * 没出现过的二级不建（避免导进来一堆空分类）。
      */
-    fun buildPlan(text: String): Plan {
-        val rows = parse(text)
+    fun buildPlan(text: String): Plan = buildPlanFromRows(parse(text))
+
+    /**
+     * 从**已经解析好的行**生成导入方案。
+     *
+     * 单独暴露这个入口，是为了让第三方软件（钱迹等）解析完自己的格式后，
+     * 也能复用这一整套「分类 → 一级/二级」的映射表 ——
+     * 不然每个软件都得各写一份分类映射，很快就跟内置分类表不同步了。
+     */
+    fun buildPlanFromRows(rows: List<RawRow>): Plan {
         if (rows.isEmpty()) return Plan(emptyList(), emptyList())
 
         // 一级 + 二级的去重组合，保持映射表里的原始顺序

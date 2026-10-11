@@ -34,6 +34,10 @@ class SettingsRepository @Inject constructor(
     private val keyLastType = intPreferencesKey("last_type")
     private val keyLastAccount = longPreferencesKey("last_account_id")
     private val keyAppTitle = stringPreferencesKey("app_title")
+    /** 上次自动备份是哪一天（yyyyMMdd），用来实现「每天只自动备份一次」 */
+    private val keyLastAutoBackupDay = stringPreferencesKey("last_auto_backup_day")
+    /** 自动备份开关，默认关（用户要求：设置好 WebDAV 之后再自己打开） */
+    private val keyAutoBackupOn = booleanPreferencesKey("auto_backup_on")
 
     data class WebDavSettings(
         val baseUrl: String = "",
@@ -166,6 +170,29 @@ class SettingsRepository @Inject constructor(
             it[keyLastType] = type
             it[keyLastAccount] = accountId
         }
+    }
+
+    /* ---------------- 每日自动备份 ---------------- */
+
+    data class AutoBackup(val enabled: Boolean, val lastDay: String) {
+        /** 今天（yyyyMMdd）还没备份过 */
+        fun shouldRunToday(today: String) = enabled && lastDay != today
+    }
+
+    val autoBackup: Flow<AutoBackup> = context.dataStore.data.map { prefs ->
+        AutoBackup(
+            enabled = prefs[keyAutoBackupOn] ?: false,
+            lastDay = prefs[keyLastAutoBackupDay] ?: ""
+        )
+    }
+
+    suspend fun saveAutoBackupEnabled(on: Boolean) {
+        context.dataStore.edit { it[keyAutoBackupOn] = on }
+    }
+
+    /** 备份成功后才记这一笔 —— 失败了不写，下次启动还会再试 */
+    suspend fun markAutoBackupDone(today: String) {
+        context.dataStore.edit { it[keyLastAutoBackupDay] = today }
     }
 
     /** 恢复备份时整个覆盖 */

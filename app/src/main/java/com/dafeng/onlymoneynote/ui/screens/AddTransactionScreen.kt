@@ -53,10 +53,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowRightAlt
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Assignment
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DoneAll
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Image
@@ -80,6 +83,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -101,6 +105,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dafeng.onlymoneynote.data.local.CategoryEntity
@@ -111,6 +119,8 @@ import com.dafeng.onlymoneynote.ui.LedgerViewModel
 import com.dafeng.onlymoneynote.ui.theme.AppTheme
 import com.dafeng.onlymoneynote.util.AppIcons
 import com.dafeng.onlymoneynote.ui.components.IconTile
+import com.dafeng.onlymoneynote.ui.components.rememberScreenHeightDp
+import com.dafeng.onlymoneynote.ui.components.rememberSheetBottomInset
 import com.dafeng.onlymoneynote.util.CategoryIcon
 import kotlinx.coroutines.flow.distinctUntilChanged
 import java.util.Calendar
@@ -135,26 +145,14 @@ fun AddTransactionScreen(
     initialImage: android.net.Uri? = null,
     onDone: () -> Unit
 ) {
-    // 底部弹层（支付宝记一笔式）：全宽、圆角只在顶部、从屏幕底部滑上来。
-    // 用 Dialog + 自绘遮罩，不用 ModalBottomSheet —— 后者带下拉把手和固定轨道，不好定制。
-    // 底部安全区（关键）：这台机器的 Dialog 窗口比屏幕**还高**（实测往下多出 ~94px），
-    // 弹层底部那段是画到屏幕外的，键盘最后一排（0 . 00 ✓）直接被切掉 —— 手感就是
-    // 「底部被挡住没法操作」。而 Dialog 内部自己拿到的 navigationBars inset 在这台
-    // 机器上是 0（手势导航时系统报 0），所以只能从 **Activity 的 decorView** 读，
-    // 读不到就按 44dp 兜底，再多加 10dp 呼吸位。
+    // 底部安全区统一走 [rememberSheetBottomInset]（记一笔、筛选等所有弹层共用一份算法）。
+    // 这台机器的 **Dialog 窗口比屏幕还高**（实测 2400px 的屏，窗口约 2470px）。
+    // 容器高度因此锁**屏幕**高度而不是窗口高度（见 [rememberScreenHeightDp]），
+    // 否则卡片底边掉到屏幕外，垫多少留白底部那排键都会被导航栏压住。
     // 之前这段留白写成 Spacer 放在 BoxWithConstraints（= Box，层叠布局）里，
     // 完全不占列高，等于没垫。
-    val activityContext = LocalContext.current
-    val cardDensity = LocalDensity.current
-    val bottomInset = remember(activityContext, cardDensity) {
-        val px = (activityContext as? android.app.Activity)?.window?.decorView?.let { dv ->
-            androidx.core.view.WindowInsetsCompat
-                .toWindowInsetsCompat(dv.rootWindowInsets)
-                .getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
-                .bottom
-        } ?: 0
-        with(cardDensity) { maxOf(px.toDp(), 44.dp) + 10.dp }
-    }
+    val bottomInset = rememberSheetBottomInset()
+    val screenH = rememberScreenHeightDp()
     Dialog(
         onDismissRequest = onDone,
         properties = DialogProperties(
@@ -176,7 +174,8 @@ fun AddTransactionScreen(
         var calendarOpen by remember { mutableStateOf(false) }
         Box(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .height(screenH)
                 .background(Color.Black.copy(alpha = 0.45f * enter.value))
                 .clickable(
                     indication = null,
@@ -301,6 +300,14 @@ private fun AddTransactionForm(
     var accountId by remember {
         mutableLongStateOf(editing?.accountId ?: AccountEntity.UNSPECIFIED_ID)
     }
+    // 转账的转入方。只在 type=TRANSFER 时有意义，默认给一个和转出方不同的账户
+    var toAccountId by remember {
+        mutableLongStateOf(
+            editing?.toAccountId?.takeIf { it > 0L }
+                ?: accounts.firstOrNull { it.id != accountId }?.id
+                ?: AccountEntity.UNSPECIFIED_ID
+        )
+    }
     var dateMillis by remember {
         mutableLongStateOf(editing?.dateMillis ?: System.currentTimeMillis())
     }
@@ -392,6 +399,12 @@ private fun AddTransactionForm(
         }
     }
 
+    // 转账没有分类可选：切到转账时把一级/二级分类面板整块藏起来，
+    // 否则用户会以为必须选个分类，保存时才被「先选个分类」拦下。
+    val isTransfer = type == TxType.TRANSFER.value
+    // 报销同理对转账无意义（钱只是挪位置，不是自己花钱）
+    if (isTransfer) reimbursed = false
+
     // 控件色统一用主题色（支付宝蓝）：分类选中、键盘确认、日历选中都跟主色走。
     // 收支类型只体现在顶部切换和金额颜色上，不把整个键盘染成红/绿。
     val accent = AppTheme.primary
@@ -404,6 +417,31 @@ private fun AddTransactionForm(
     /** 保存：把表达式算掉，校验，然后落库 */
     /** 保存：把表达式算掉，校验，然后落库。keepOpen=true 时保存后留在页面继续记。 */
     fun save(keepOpen: Boolean = false) {
+        // 转账：不选分类、也没有报销，走它自己那条路。
+        //
+        // ⚠️ 这里**必须先判 isEdit**：否则「长按转账 → 改金额 → 保存」会走
+        // addTransfer（纯 insert），原件纹丝不动，凭空多一条 —— 而且把类型
+        // 从转账改成支出时更隐蔽：插一条支出、转账还在，账户余额凭空少一笔。
+        if (type == TxType.TRANSFER.value) {
+            val finalTransferAmount = if (amount.any { it == '+' || it == '−' }) {
+                calculate(amount) ?: run {
+                    vm.showToast("金额算不出来，检查一下")
+                    return
+                }
+            } else amount
+            if (isEdit) {
+                vm.updateTransfer(editing!!.id, finalTransferAmount, accountId, toAccountId, dateMillis, note)
+            } else {
+                vm.addTransfer(finalTransferAmount, accountId, toAccountId, dateMillis, note)
+            }
+            if (keepOpen && !isEdit) {
+                amount = ""
+            } else {
+                onDone()
+            }
+            return
+        }
+
         if (categoryId <= 0L) {
             vm.showToast("先选个分类")
             return
@@ -468,6 +506,12 @@ private fun AddTransactionForm(
         // 注意结构：weight 放在**普通 Box** 上（高度严格 = 分配值，永远不会把键盘顶出屏幕），
         // verticalScroll 放在里面的内容 Column 上。之前 weight+verticalScroll 直接叠在
         // Crossfade 上，实测高度会失控（多出 ~150dp），键盘最后一排被顶出屏幕外。
+        //
+        // ⚠️ 这个 weight **不能因为转账就摘掉**（2026-10-11 踩过这个坑）：
+        // 摘掉之后底部那个 `Spacer(weight)` 会抢走全部剩余高度，
+        // 账户行和数字键盘被压扁到看不见 —— 症状是「整页只剩一片空白」。
+        // 转账要瘦下来，靠的是**下面那行提示自己矮**（只有一行字），
+        // 而这块继续吃 weight、只是内容不再占满。
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -498,6 +542,40 @@ private fun AddTransactionForm(
                         },
                         onCancel = { onCalendarOpen(false) }
                     )
+                } else if (isTransfer) {
+                    // 转账没有分类可填，**这一整块就是账户选择**。
+                    //
+                    // 2026-10-11 用户反馈「转账页面上面都是空的」：
+                    // 原来这里是「两行说明文字 + 下面一条分类区占位」，
+                    // 顶栏下面整整一大片空白，账户行被顶到键盘旁边。
+                    //
+                    // 现在：账户行放进这块、**垂直居中**，一行三段「转出 → 转入」，
+                    // 点开在下面出竖向候选列表。
+                    // 说明文字全部去掉 —— 顶栏已经写着「转账」，不用再解释一遍。
+                    //
+                    // 为什么居中而不顶格：这块是 weight(1f)，高度 = 键盘区以上全部剩余空间。
+                    // 转账内容只有一行，顶格会把空白全堆在账户行下面，看着像没加载完；
+                    // 居中之后上下留白对称，像一张正常的转账页（开关 → 账户 → 键盘）。
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        TransferAccountRow(
+                            accounts = accounts,
+                            fromId = accountId,
+                            toId = toAccountId,
+                            accent = accent,
+                            onFrom = {
+                                accountId = it
+                                // 别让两边选成同一个账户，不然保存时会被拦下
+                                if (toAccountId == it) {
+                                    toAccountId = accounts.firstOrNull { a -> a.id != it }?.id
+                                        ?: AccountEntity.UNSPECIFIED_ID
+                                }
+                            },
+                            onTo = { toAccountId = it }
+                        )
+                    }
                 } else {
                     Column(
                         modifier = Modifier
@@ -554,7 +632,8 @@ private fun AddTransactionForm(
                 }
             }
             }
-            }
+            }   // 上面那块 weight Box 到此为止：键盘区必须在它**外面**，
+                // 不然 Box 是层叠布局，分类网格会和键盘叠在一起画。
 
             /* ---------- 键盘区 ---------- */
             // 键盘是 4 列等分 + 右侧 1 列功能键，共 5 列 4 个间隙。
@@ -578,14 +657,6 @@ private fun AddTransactionForm(
             Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
             ) {
-                /* ---------- 账户：这笔钱从哪个账户走（紧贴金额行上方） ---------- */
-                AccountPickerRow(
-                    accounts = accounts,
-                    selectedId = accountId,
-                    accent = accent,
-                    onSelect = { accountId = it }
-                )
-
                 // 金额行：备注（左，3 列宽）+ 金额（右，2 列宽 = 符号列+功能列）
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
@@ -691,6 +762,7 @@ private fun AddTransactionForm(
                                     if (r != null) amount = r else vm.showToast("表达式算不出来")
                                 }
                                 "✓" -> save()
+                                "连记" -> save(keepOpen = true)
                                 else -> amount += k
                             }
                         },
@@ -705,7 +777,19 @@ private fun AddTransactionForm(
                         .padding(vertical = 3.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // 第 1 行：识图
+                    // 第 1 行：账户。2026-10-11 用户要求「放在加号边上」——
+                    // 键盘第一行第四列是「+」，它右边这格原来空着，
+                    // 账户胶囊填进来，四行五列正好铺满，不再飘在金额行上面。
+                    // 转账的两边账户在上面那两列里，这里不用再放。
+                    if (!isTransfer) {
+                        AccountPickerChip(
+                            accounts = accounts,
+                            selectedId = accountId,
+                            accent = accent,
+                            onSelect = { accountId = it }
+                        )
+                    }
+                    // 第 2 行：识图
                     KeypadSideButton(
                         label = "识图",
                         icon = Icons.Outlined.Image,
@@ -717,7 +801,7 @@ private fun AddTransactionForm(
                             )
                         }
                     )
-                    // 第 2 行：时间。默认显示「现在」，改过时间才显示具体值
+                    // 第 3 行：时间。默认显示「现在」，改过时间才显示具体值
                     KeypadSideButton(
                         label = if (isNowTime) "现在" else timeLabelForKeypad(dateMillis),
                         icon = Icons.Outlined.Schedule,
@@ -725,25 +809,24 @@ private fun AddTransactionForm(
                         active = !isNowTime,
                         onClick = { onCalendarOpen(!calendarOpen) }
                     )
-                    // 第 3 行：报销
-                    KeypadSideButton(
-                        label = "报销",
-                        icon = Icons.Outlined.Assignment,
-                        accent = accent,
-                        active = reimbursed,
-                        onClick = { reimbursed = !reimbursed }
-                    )
-                    // 第 4 行：双对勾 —— 保存后留在本页继续记（连续记账）
-                    if (!isEdit) {
+                    // 第 4 行：报销。转账没有「报销」这回事（钱只是挪位置），
+                    // 这一格换成转账的说明，省得用户点了没反应以为坏了
+                    if (isTransfer) {
                         KeypadSideButton(
-                            label = "",   // 只留双对勾图标，不加文字
-                            icon = Icons.Outlined.DoneAll,
+                            label = "转账",
+                            icon = Icons.Outlined.SwapHoriz,
                             accent = accent,
-                            active = false,
-                            onClick = { save(keepOpen = true) }
+                            active = true,
+                            onClick = { }
                         )
                     } else {
-                        Spacer(Modifier.height(52.dp))
+                        KeypadSideButton(
+                            label = "报销",
+                            icon = Icons.Outlined.Assignment,
+                            accent = accent,
+                            active = reimbursed,
+                            onClick = { reimbursed = !reimbursed }
+                        )
                     }
                 }
                 }   // 键盘行 Row
@@ -784,14 +867,24 @@ private fun TypeSwitch(selected: Int, onSelect: (Int) -> Unit) {
         color = MaterialTheme.colorScheme.surfaceVariant
     ) {
         Row(modifier = Modifier.padding(3.dp)) {
-            listOf("支出", "收入").forEachIndexed { i, label ->
-                val sel = i == selected
-                val c = if (i == TxType.EXPENSE.value) AppTheme.expense else AppTheme.income
+            // 三个类型：支出 / 收入 / 转账。用显式三元组而不是 forEachIndexed，
+            // 因为转账的 value=2，跳过 1 之后下标和值就对不上了。
+            listOf(
+                "支出" to TxType.EXPENSE.value,
+                "收入" to TxType.INCOME.value,
+                "转账" to TxType.TRANSFER.value
+            ).forEach { (label, value) ->
+                val sel = value == selected
+                val c = when (value) {
+                    TxType.EXPENSE.value -> AppTheme.expense
+                    TxType.INCOME.value -> AppTheme.income
+                    else -> AppTheme.primary
+                }
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(15.dp))
                         .background(if (sel) MaterialTheme.colorScheme.surface else Color.Transparent)
-                        .clickable { onSelect(i) }
+                        .clickable { onSelect(value) }
                         .padding(horizontal = 16.dp, vertical = 7.dp)
                 ) {
                     Text(
@@ -1159,8 +1252,9 @@ private fun Keypad(
         listOf("1", "2", "3", "+"),
         listOf("4", "5", "6", "−"),
         listOf("7", "8", "9", "⌫"),
-        // 连续记账移到右侧功能列的第 4 行（双对勾图标），这里只留保存
-        listOf("0", ".", "00", if (hasOperator) "=" else "✓")
+        // 2026-10-11 用户要求：去掉 00，把 ✓ 和连续记账都挪进键盘区（往左移），
+        // 右侧功能列只留 识图 / 现在 / 报销 三个。
+        listOf("0", ".", "✓", "连记")
     )
     Column(modifier = modifier) {
         rows.forEach { row ->
@@ -1229,6 +1323,13 @@ private fun KeyButton(
             Icon(
                 Icons.Outlined.Check, "保存",
                 modifier = Modifier.size(26.dp),
+                tint = fg
+            )
+        } else if (label == "连记") {
+            // 连续记账：双对勾图标，跟保存键同尺寸
+            Icon(
+                Icons.Outlined.DoneAll, "连续记账",
+                modifier = Modifier.size(24.dp),
                 tint = fg
             )
         } else {
@@ -1756,54 +1857,275 @@ private fun trimNumber(d: Double): String {
     return "%.2f".format(rounded).trimEnd('0').trimEnd('.')
 }
 
-/* ------------------------------------------------------------------ */
-/* 账户选择行                                                          */
-/* ------------------------------------------------------------------ */
-
 /**
- * 记一笔里的「这笔钱从哪个账户走」：横向滚动的小胶囊，按使用频率排序。
- * 账户一般就七八个，滚一行够用，不像分类那样铺网格。
+ * 转账专用的账户选择：**左右两列 + 中间箭头**。
+ *
+ * 2026-10-11 用户前后提了几次，最后定的是这一版：
+ * 1. 最初并排两列 + 横向滑动 → 账户名被挤掉一半
+ * 2. 改成上下两行 → 「上面都是空的」，纵向浪费
+ * 3. 改成「转出 ▾ / → / 转入 ▾」两个下拉框 → 用户直接否掉：
+ *    **不需要下拉键**，账户本来就一屏放得下，藏起来反而多一次点击。
+ *
+ * 现在：左边整列转出、右边整列转入，箭头固定居中，所有账户**直接铺出来**，
+ * 选中项整行高亮。两列各自可上下滚，账户再多也撑不破弹层。
+ *
+ * 左右不允许选同一个：点到的正好是另一侧已选中的那个时**自动对调**，
+ * 而不是拒绝点击（拒绝会让用户以为按钮坏了）。
  */
 @Composable
-private fun AccountPickerRow(
+private fun TransferAccountRow(
     accounts: List<AccountEntity>,
-    selectedId: Long,
+    fromId: Long,
+    toId: Long,
     accent: Color,
-    onSelect: (Long) -> Unit
+    onFrom: (Long) -> Unit,
+    onTo: (Long) -> Unit
 ) {
     if (accounts.isEmpty()) return
+    // 候选顺序：常用账户在前（跟收支那套一致的排序）
+    val ordered = accounts.sortedWith(
+        compareByDescending<AccountEntity> { it.sortOrder }
+    )
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        accounts.forEach { a ->
-            val selected = a.id == selectedId
-            Row(
-                modifier = Modifier
-                    .height(38.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (selected) accent else MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { onSelect(a.id) }
-                    .padding(horizontal = 9.dp),
-                verticalAlignment = Alignment.CenterVertically
+        // 左：转出
+        AccountColumn(
+            title = "转出",
+            accounts = ordered,
+            selectedId = fromId,
+            accent = accent,
+            modifier = Modifier.weight(1f),
+            onSelect = { id ->
+                if (id == toId) { onTo(fromId); onFrom(id) } else onFrom(id)
+            }
+        )
+        // 中：箭头（固定居中）
+        Icon(
+            Icons.AutoMirrored.Outlined.ArrowRightAlt,
+            contentDescription = "转到",
+            modifier = Modifier.size(20.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        // 右：转入
+        AccountColumn(
+            title = "转入",
+            accounts = ordered,
+            selectedId = toId,
+            accent = accent,
+            modifier = Modifier.weight(1f),
+            onSelect = { id ->
+                if (id == fromId) { onFrom(toId); onTo(id) } else onTo(id)
+            }
+        )
+    }
+}
+
+/**
+ * 收支记账的账户选择：键盘「+」右边那格，样式跟其他功能键同款（头像在上、名字在下），
+ * 点它**往左展开**一个面板。
+ *
+ * 2026-10-11 用户要求。最早是占满整行的一排账户，把金额行和键盘整体顶下去一截；
+ * 后来飘在金额行上方又显得孤零零。现在填进「+」右边那空格，键盘区四行五列铺满。
+ *
+ * 展开的面板样式对齐二级分类弹层（[ChildPickerPopup]）：圆角白底、选中项高亮，
+ * 但**从胶囊左边展开**（不是屏幕正中），宽度约 1/3 屏。
+ */
+@Composable
+private fun AccountPickerChip(
+    accounts: List<AccountEntity>,
+    selectedId: Long,
+    accent: Color,
+    onSelect: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var open by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    // 面板宽度 = 1/3 屏。账户名一般 2~4 字，1/3 屏放得下还留点呼吸位。
+    val panelWidth = with(density) {
+        (LocalConfiguration.current.screenWidthDp / 3f).dp
+    }
+    // 面板定位：以**胶囊**为锚点，右边缘贴在胶囊左边缘再往左一个 gap，
+    // 底边跟胶囊底边对齐 —— 视觉上就是「从胶囊左边长出来的」。
+    val popupProvider = remember(density) {
+        object : androidx.compose.ui.window.PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val gap = with(density) { 8.dp.roundToPx() }
+                val x = anchorBounds.left - popupContentSize.width - gap
+                val y = anchorBounds.bottom - popupContentSize.height
+                return IntOffset(x, y)
+            }
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .clickable { open = !open },
+        contentAlignment = Alignment.Center
+    ) {
+        val a = accounts.firstOrNull { it.id == selectedId }
+        // 2026-10-11 用户要求：名字放头像下面，整格跟「识图 / 现在 / 报销」同款同宽
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            IconTile(
+                iconKey = a?.iconKey ?: "emoji:💳",
+                size = 17.dp,
+                cornerRadius = 5.dp,
+                overrideColor = com.dafeng.onlymoneynote.util.AppIcons.colorFromKey(a?.colorKey)
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(
+                a?.name ?: "未指定",
+                fontSize = 9.5.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = accent
+            )
+        }
+
+        if (open) {
+            val enter = remember { Animatable(0f) }
+            LaunchedEffect(Unit) { enter.animateTo(1f, tween(170, easing = FastOutSlowInEasing)) }
+            Popup(
+                properties = PopupProperties(
+                    focusable = true,
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                ),
+                onDismissRequest = { open = false },
+                popupPositionProvider = popupProvider
             ) {
-                IconTile(
-                    iconKey = a.iconKey, size = 24.dp, cornerRadius = 8.dp,
-                    overrideColor = com.dafeng.onlymoneynote.util.AppIcons.colorFromKey(a.colorKey)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    a.name,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (selected) MaterialTheme.colorScheme.onPrimary
-                    else MaterialTheme.colorScheme.onSurface
-                )
+                Column(
+                    modifier = Modifier
+                        .width(panelWidth)
+                        .graphicsLayer { alpha = enter.value }
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(8.dp)
+                ) {
+                    accounts.forEach { a ->
+                        val sel = a.id == selectedId
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (sel) accent.copy(alpha = 0.14f)
+                                    else Color.Transparent
+                                )
+                                .clickable {
+                                    onSelect(a.id)
+                                    open = false
+                                }
+                                .padding(horizontal = 10.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconTile(
+                                iconKey = a.iconKey, size = 26.dp, cornerRadius = 8.dp,
+                                overrideColor = com.dafeng.onlymoneynote.util.AppIcons.colorFromKey(a.colorKey)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                a.name,
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (sel) accent else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (sel) {
+                                Icon(
+                                    Icons.Outlined.Check,
+                                    contentDescription = "已选",
+                                    modifier = Modifier.size(17.dp),
+                                    tint = accent
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 转账页面里的一列账户（标题 + 可滚的账户行） */
+@Composable
+private fun AccountColumn(
+    title: String,
+    accounts: List<AccountEntity>,
+    selectedId: Long,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    onSelect: (Long) -> Unit
+) {
+    Column(modifier = modifier) {
+        Text(
+            title,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+        )
+        val listState = rememberLazyListState()
+        // 账户是按 sortOrder 排的（「未指定」sortOrder=0，永远排最后），
+        // 列又有 268dp 高度上限，所以**选中的那个常常在折叠区外** ——
+        // 打开一看两边都没高亮，还以为没默认值。
+        // 这里滚到选中项，让当前状态一眼可见。
+        val selIndex = accounts.indexOfFirst { it.id == selectedId }
+        LaunchedEffect(selIndex, accounts.size) {
+            if (selIndex >= 0) listState.scrollToItem(selIndex)
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                // 上限 268dp：十来个账户铺满，再多就列内滚动，绝不把弹层撑破
+                .heightIn(max = 268.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(accounts, key = { it.id }) { a ->
+                val sel = a.id == selectedId
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(
+                            if (sel) accent else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        .clickable { onSelect(a.id) }
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconTile(
+                        iconKey = a.iconKey, size = 22.dp, cornerRadius = 7.dp,
+                        overrideColor = com.dafeng.onlymoneynote.util.AppIcons.colorFromKey(a.colorKey)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        a.name,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (sel) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
     }
