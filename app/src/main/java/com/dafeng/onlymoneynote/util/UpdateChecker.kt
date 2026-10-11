@@ -20,13 +20,21 @@ import java.util.concurrent.TimeUnit
  * 不用重新编包、不用让用户装新包才能看到新链接。
  *
  * **只在用户点「关于 → 版本号」时调用一次**，App 平时完全不联网。
- * [UPDATE_JSON_URL] 还是占位值时 [check] 直接返回 [NotConfigured]，
- * 不会去请求一个假地址。
+ * [UPDATE_JSON_URLS] 全是占位值时 [check] 直接返回 [NotConfigured]，不会去请求假地址。
  */
 object UpdateChecker {
 
-    /** 更新信息 JSON 的公网地址。换成你自己的（坚果云公开链接 / GitHub raw 都行）。 */
-    const val UPDATE_JSON_URL = "https://cdn.jsdelivr.net/gh/fyyy19951126/OnlyMoneyNote@main/update/update.json"
+    /**
+     * 更新信息 JSON 的公网地址，**按顺序试，谁先通用谁**。
+     *
+     * 2026-10-11 用户提的：「鉴于用户可能直连 github 失败」。
+     * jsDelivr 在国内移动网络经常被 DNS 污染，所以把 Gitee（国内直连）放第一位，
+     * GitHub 的 CDN 留作兜底 —— Gitee 那份要记得跟 GitHub 一起 push。
+     */
+    val UPDATE_JSON_URLS = listOf(
+        "https://gitee.com/fyyy19951126/only-money-note/raw/main/update/update.json",
+        "https://cdn.jsdelivr.net/gh/fyyy19951126/OnlyMoneyNote@main/update/update.json"
+    )
 
     private const val PLACEHOLDER_HOST = "example.com"
 
@@ -56,16 +64,24 @@ object UpdateChecker {
     }
 
     suspend fun check(currentVersionName: String): Result = withContext(Dispatchers.IO) {
-        if (UPDATE_JSON_URL.isBlank() || UPDATE_JSON_URL.contains(PLACEHOLDER_HOST)) {
-            return@withContext Result.NotConfigured
-        }
-        val body = runCatching {
-            client.newCall(Request.Builder().url(UPDATE_JSON_URL).build()).execute()
-                .use { resp ->
-                    if (!resp.isSuccessful) return@withContext Result.Failed("服务器返回 ${resp.code}")
+        val candidates = UPDATE_JSON_URLS.filter { it.isNotBlank() && !it.contains(PLACEHOLDER_HOST) }
+        if (candidates.isEmpty()) return@withContext Result.NotConfigured
+
+        // 依次试，第一个通的就用；全都不通才报失败（失败原因留最后一条）
+        var text: String? = null
+        var failReason = "网络错误"
+        for (u in candidates) {
+            if (text != null) break
+            try {
+                text = client.newCall(Request.Builder().url(u).build()).execute().use { resp ->
+                    if (!resp.isSuccessful) error("服务器返回 ${resp.code}")
                     resp.body?.string().orEmpty()
                 }
-        }.getOrElse { return@withContext Result.Failed(it.message ?: "网络错误") }
+            } catch (e: Exception) {
+                failReason = e.message ?: "网络错误"
+            }
+        }
+        val body = text ?: return@withContext Result.Failed(failReason)
 
         val info = runCatching {
             val o = JSONObject(body)

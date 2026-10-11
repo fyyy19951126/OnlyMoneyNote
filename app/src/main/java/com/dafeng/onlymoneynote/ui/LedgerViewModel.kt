@@ -270,6 +270,7 @@ class LedgerViewModel @Inject constructor(
      * 有新版 → 直接跳浏览器下载页；其余结果一律 toast。
      */
     fun checkUpdateNow() {
+        _updateHint.value = null
         viewModelScope.launch {
             _busy.value = true
             val current = runCatching {
@@ -278,22 +279,37 @@ class LedgerViewModel @Inject constructor(
             }.getOrDefault("0")
             val r = UpdateChecker.check(current)
             _busy.value = false
+            // 结果写进 updateHint 显示在「关于」对话框里（toast 会被对话框盖住）
             when (r) {
-                is UpdateChecker.Result.NotConfigured -> _toast.value = "还没配置更新地址"
-                is UpdateChecker.Result.UpToDate -> _toast.value = "已是最新版本 $current"
-                is UpdateChecker.Result.Failed -> _toast.value = "检查更新失败：${r.reason}"
-                is UpdateChecker.Result.Newer -> runCatching {
-                    appContext.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse(r.info.url))
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
-                }.onFailure { _toast.value = "打不开下载页：${r.info.url}" }
+                is UpdateChecker.Result.NotConfigured -> _updateHint.value = "还没配置更新地址"
+                is UpdateChecker.Result.UpToDate -> _updateHint.value = "已是最新版本"
+                is UpdateChecker.Result.Failed -> _updateHint.value = "连不上更新服务器"
+                is UpdateChecker.Result.Newer -> {
+                    _updateHint.value = "发现新版本 ${r.info.versionName}，正在打开下载页"
+                    runCatching {
+                        appContext.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(r.info.url))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }.onFailure { _updateHint.value = "打不开下载页" }
+                }
             }
         }
     }
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    /**
+     * 「关于 → 版本号」的检查结果文案，显示在对话框那一行里。
+     * 2026-10-11：之前只发 toast，而 toast 画在主窗口上、被 AlertDialog 盖住，
+     * 用户点了版本号看着就是「没反应」。
+     */
+    private val _updateHint = MutableStateFlow<String?>(null)
+    val updateHint: StateFlow<String?> = _updateHint.asStateFlow()
+
+    /** 关掉「关于」时清掉上次结果，免得下次打开还挂着「已是最新版本」 */
+    fun clearUpdateHint() { _updateHint.value = null }
 
     // ============ 统计 ============
 

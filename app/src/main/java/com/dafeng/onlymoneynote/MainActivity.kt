@@ -184,6 +184,7 @@ private fun AppRoot(
     val accountOverviews by vm.accountOverviews.collectAsState()
     val accounts by vm.accounts.collectAsState()
     val autoBackupOn by vm.autoBackupOn.collectAsState()
+    val updateHint by vm.updateHint.collectAsState()
 
     // 提示条：显示 1.8 秒自动消失。
     // 用 LaunchedEffect(toast) 做延时 —— toast 变了协程就重启，不会误清下一条。
@@ -392,6 +393,7 @@ private fun AppRoot(
                 AboutDialog(
                     onDismiss = { showAbout = false },
                     checking = busy,
+                    hint = updateHint,
                     // 2026-10-09 用户要求：平时不联网；点这一行才查，有新版直接跳浏览器下载页
                     onTapVersion = { vm.checkUpdateNow() }
                 )
