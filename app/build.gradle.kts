@@ -23,11 +23,12 @@ android {
         applicationId = "com.dafeng.onlymoneynote"
         minSdk = 26
         targetSdk = 36
-        // 2026-10-11：修转账编辑丢记录 / CSV 往返丢转账 / OCR 收支误判 /
-        // 删账户漏清转入方；新增第三方账单导入、每日自动备份、批量改分类。
-        // versionCode 必须比手机上那个 2 大，否则装不上（同版本号系统会拒）。
-        versionCode = 3
-        versionName = "1.2.0"
+        // 2026-10-11（1.2.1）：修导入钱迹几千笔后后台 OOM 闪退（桌面插件全表加载）、
+        // 修第三方导入产生「支付宝 → 支付宝」自环转账污染统计、
+        // 记一笔账户选择面板加宽（原「招商银行储蓄卡」这类名字被 Ellipsis 截掉）。
+        // versionCode 必须比手机上那个大，否则装不上（同版本号系统会拒）。
+        versionCode = 4
+        versionName = "1.2.1"
         vectorDrawables { useSupportLibrary = true }
 
         // ML Kit 的中文 OCR 模型每个 ABI 一份，各 6~11MB，是包体里最大的一块。

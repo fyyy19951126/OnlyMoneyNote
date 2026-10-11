@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只开放 cacheDir/update 这一个目录，别的目录一概不给 content:// -->
+<paths>
+    <cache-path
+        name="update"
+        path="update/" />
+</paths>

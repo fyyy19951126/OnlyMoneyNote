@@ -10,6 +10,13 @@ dist/
 _import/
 _screenshots/
 
+# 安装包仓库（apk-dist）：它自己是**独立的 git 仓库**（推 Gitee 的
+# only-money-note-apk），有自己的发布历史和 remote。
+# 这里只是把目录收进项目里方便一起管理，绝不能被外层仓库当成普通文件跟踪 ——
+# 16MB 的二进制 + 双重 git 历史，进外层仓库会直接把仓库撑大、
+# 而且两套历史会互相干扰。所以整个目录忽略掉，让内层 .git 自己管。
+/apk-dist/
+
 # 签名密钥与密码：只留本机，另备份到离线位置
 *.jks
 keystore.properties

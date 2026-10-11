@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -51,6 +52,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
@@ -72,6 +76,7 @@ import com.dafeng.onlymoneynote.data.local.AccountEntity
 import com.dafeng.onlymoneynote.data.local.CategoryEntity
 import com.dafeng.onlymoneynote.data.local.TxType
 import com.dafeng.onlymoneynote.data.local.TxWithCategory
+import com.dafeng.onlymoneynote.data.repo.originIdFromNote
 import com.dafeng.onlymoneynote.ui.LedgerViewModel
 import com.dafeng.onlymoneynote.ui.components.IconTile
 import com.dafeng.onlymoneynote.ui.components.PageHeader
@@ -532,7 +537,13 @@ fun TransactionListScreen(
                                     onDelete(txId)
                                 },
                                 onEdit = onEdit,
-                                onToggleSelect = { toggleSelect(tx.id) }
+                                onToggleSelect = { toggleSelect(tx.id) },
+                                // 长按账单 = 直接进多选并顺手勾上这一笔，
+                                // 省得先点「整理」再点账单，两步变一步
+                                onLongPress = {
+                                    if (!selectMode) selectMode = true
+                                    if (tx.id !in selectedIds) selectedIds = selectedIds + tx.id
+                                }
                             )
                         }
                     }
@@ -568,38 +579,11 @@ fun TransactionListScreen(
                     .navigationBarsPadding()
                     .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 12.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (selectedIds.isEmpty()) "未选中" else "已选 " + selectedIds.size + " 笔",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        "全选",
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { toggleSelectAll() }
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        color = AppTheme.primary
-                    )
-                    Text(
-                        "退出",
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { exitSelect() }
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
                 Spacer(Modifier.height(6.dp))
                 // 两个批量操作并排：改账户 / 改分类。
                 // 改分类比改账户更容易点错（一改就是几百笔的分类全变），
                 // 所以用描边样式区分，并且下面走**两步确认**。
+                // 已选笔数 / 全选 / 退出只留在页头那条状态栏里，底部不再重复一遍。
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     BulkActionButton(
                         text = "设为账户",
@@ -870,6 +854,31 @@ internal fun DayHeader(day: DayLabel, expense: Long, income: Long) {
 private val REVEAL_WIDTH = 92.dp
 
 /**
+ * 这条账单是不是报销冲销行。
+ *
+ * ⚠️ 必须认 note 前缀，**不能只看金额为负** —— 用户手记一笔负数支出也会命中，
+ * 那样就会被染成红色的「报销到账」，凭空多出一笔收入。两页（首页 / 报销页）共用这个判断。
+ */
+internal fun isOffsetTx(tx: TxWithCategory): Boolean = originIdFromNote(tx.note) != null
+
+/**
+ * 冲销行给人看的备注。
+ *
+ * 数据库里存的是 `报销冲销#<原id>（报销于 2026-09-27）`：
+ * 前缀 + id 给程序认（撤销、级联删除都靠它精确定位），括号里那截才是人话。
+ * 提取时**必须把尾括号一起去掉** —— 只 substringAfter('（') 会带上「）」，
+ * 界面上就成了「报销于 2026-09-27）」，多一个孤零零的括号。
+ * 两页（首页 / 报销页）共用这一个函数，别各写一遍。
+ */
+internal fun offsetDisplayNote(tx: TxWithCategory): String {
+    if (!isOffsetTx(tx)) return tx.note
+    val inner = tx.note.substringAfter('（', "")
+        .removeSuffix("）")
+        .trim()
+    return inner.ifBlank { "报销冲回" }
+}
+
+/**
  * 可左滑的账单项。
  *
  * 这里没用 `SwipeToDismissBox`——它的 confirmValueChange 只有「过阈值就删除」两种结果，
@@ -889,12 +898,18 @@ internal fun SwipeableTxRow(
     onOpenChange: (Boolean) -> Unit,
     onDelete: (Long) -> Unit,
     onEdit: (TxWithCategory) -> Unit,
-    onToggleSelect: () -> Unit = {}
+    onToggleSelect: () -> Unit = {},
+    /** 长按账单：直接进多选（还没在多选里的话）。批量归类最快的方式 */
+    onLongPress: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val revealPx = with(density) { REVEAL_WIDTH.toPx() }
     val offsetX = remember { Animatable(0f) }
+    // 拖动中的实时位移（同步状态）。Animatable.snapTo 是挂起函数，
+    // 放在协程里执行，松手那一刻 offsetX.value 可能还是旧值，
+    // 阈值判断成「没滑够」就把手柄弹回去 —— 偶尔滑开停不住就是这个原因。
+    var rawX by remember { mutableFloatStateOf(0f) }
 
     // 外部把这条关掉时（比如滑了别的行），同步收回
     LaunchedEffect(isOpen) {
@@ -902,11 +917,13 @@ internal fun SwipeableTxRow(
         if (offsetX.value != target) {
             offsetX.animateTo(target, tween(180))
         }
+        rawX = offsetX.value
     }
     // 进多选时把还展开着的那一行收回去，别留一条张着的红色删除带
     LaunchedEffect(selectMode) {
         if (selectMode && offsetX.value != 0f) {
             offsetX.animateTo(0f, tween(180))
+            rawX = 0f
             onOpenChange(false)
         }
     }
@@ -915,10 +932,12 @@ internal fun SwipeableTxRow(
         // ---- 底层：删除按钮（平时被上面的不透明行完全盖住）。多选时不画，避免误触 ----
         if (!selectMode) {
             Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(AppTheme.danger),
+            modifier = Modifier
+                .matchParentSize()
+                // 只切**右侧**两个角。删除区是滑开后才露出来的外缘，
+                // 左边贴着卡片，切了角会在接缝处透出页面底色，看着像按钮镶了白边。
+                .clip(RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp))
+                .background(AppTheme.danger),
                 contentAlignment = Alignment.CenterEnd
             ) {
                 Row(
@@ -943,7 +962,7 @@ internal fun SwipeableTxRow(
         // ---- 上层：卡片，可横向拖动 ----
         Box(
             modifier = Modifier
-                .offset { IntOffset(offsetX.value.roundToInt(), 0) }
+                .offset { IntOffset(rawX.roundToInt(), 0) }
                 .then(
                     if (!swipeEnabled) {
                         Modifier
@@ -951,13 +970,16 @@ internal fun SwipeableTxRow(
                         Modifier.draggable(
                             orientation = Orientation.Horizontal,
                             state = rememberDraggableState { delta ->
-                                scope.launch {
-                                    offsetX.snapTo((offsetX.value + delta).coerceIn(-revealPx, 0f))
-                                }
+                                rawX = (rawX + delta).coerceIn(-revealPx, 0f)
                             },
                             onDragStopped = {
-                                val shouldOpen = offsetX.value < -revealPx * 0.4f
-                                offsetX.animateTo(if (shouldOpen) -revealPx else 0f, tween(180))
+                                val v = rawX
+                                val shouldOpen = v < -revealPx * 0.4f
+                                scope.launch {
+                                    offsetX.snapTo(v)
+                                    offsetX.animateTo(if (shouldOpen) -revealPx else 0f, tween(180))
+                                    rawX = offsetX.value
+                                }
                                 onOpenChange(shouldOpen)
                             }
                         )
@@ -969,12 +991,20 @@ internal fun SwipeableTxRow(
                 interactive = interactive && !selectMode,
                 selectMode = selectMode,
                 selected = selected,
+                onLongClick = onLongPress,
                 onClick = {
                     if (selectMode) {
                         onToggleSelect()
                     } else {
-                        if (offsetX.value != 0f) {
-                            scope.launch { offsetX.animateTo(0f, tween(180)) }
+                        if (rawX != 0f) {
+                            scope.launch {
+                                offsetX.animateTo(0f, tween(180))
+                                rawX = 0f
+                            }
+                            onOpenChange(false)
+                        } else if (isOffsetTx(tx)) {
+                            // 冲销行的金额 / 日期跟原始账单是配对的，改了就撤销不了。
+                            // 要改去改原始那笔，冲销行应随之重算。
                             onOpenChange(false)
                         } else {
                             onEdit(tx)
@@ -986,16 +1016,26 @@ internal fun SwipeableTxRow(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun TxRow(
     tx: TxWithCategory,
     interactive: Boolean = true,
     selectMode: Boolean = false,
     selected: Boolean = false,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     val isExpense = tx.type == TxType.EXPENSE.value
-    val color = AppTheme.byType(isExpense)
+// 冲销行的判断**不能只看金额为负** —— 用户完全可能手记一笔负数支出，
+    // 那样也会命中，把它染成红色的「收入」就成了凭空多出一笔进账。
+    // 认准 note 前缀，这是本 App 造冲销行时写死的。
+    val isOffset = isOffsetTx(tx)
+    // 显示层跟账本口径反着来：账本里冲销行是负支出（用于抵扣总支出），
+    // 但从用户视角这是「报销款到账」，所以显示成正数 + 收入红。
+    // ⚠️ 只改显示，**不要改数据库里的金额** —— 那个负数是统计扣减的依据。
+    val shownCents = if (isOffset) -tx.amountCents else tx.amountCents
+    val color = if (isOffset) AppTheme.income else AppTheme.byType(isExpense)
 
     // 注意：这一层**必须是不透明的** —— 下面压着红色删除层，背景一透明
     // 删除按钮就直接显在表面上。
@@ -1003,7 +1043,12 @@ private fun TxRow(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(enabled = interactive || selectMode) { onClick() }
+            // 长按进多选：跟系统相册一致的手势，省得先点「整理」再点账单
+            .combinedClickable(
+                enabled = interactive || selectMode,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .padding(start = 4.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1047,8 +1092,12 @@ private fun TxRow(
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                // 报销标记：跟普通账单一眼能分开。选中报销的账单才有。
-                if (tx.reimbursed) {
+                // 「报销」标记：这笔进了报销池就打标，冲销行除外。
+                // 判据用 isReimburse（进池）而不是 reimbursed（已报完）——
+                // 用户刚记一笔勾了报销、在还没报之前就该看到标记，
+                // 否则那段时间里它看起来跟普通账单毫无区别。
+                // 冲销行不标：它本身就是报销的结果，再挂一个「报销」等于同义反复。
+                if (tx.isReimburse && !isOffset) {
                     Spacer(Modifier.width(6.dp))
                     Text(
                         text = "报销",
@@ -1061,10 +1110,12 @@ private fun TxRow(
                             .padding(horizontal = 4.dp, vertical = 1.dp)
                     )
                 }
-                if (tx.note.isNotBlank()) {
+                // 冲销行备注要把「报销冲销#<id>」前缀去掉，只留括号里的人话
+                val noteText = offsetDisplayNote(tx)
+                if (noteText.isNotBlank()) {
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = tx.note,
+                        text = noteText,
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -1077,11 +1128,15 @@ private fun TxRow(
         // 转账中性显示：不带 +/- 前缀，也不染红绿 —— 它既不是花钱也不是进账
         val isTransfer = tx.type == TxType.TRANSFER.value
         Text(
+            // 冲销行显示 +¥正数（钱回来了），其余照旧按收支类型带 +/- 前缀。
+            // 之前那个「金额为负就不加前缀」的分支会让冲销行变成裸数字，
+            // 跟旁边带 ¥ 的行对不齐，看着像漏了币种符号。
             text = (when {
                 isTransfer -> ""
+                isOffset -> "+¥"
                 isExpense -> "-¥"
                 else -> "+¥"
-            }) + LedgerViewModel.formatCents(tx.amountCents),
+            }) + LedgerViewModel.formatCents(shownCents),
             // 金额右对齐并预留固定宽度：位数不同也不会把右边的账户头像推得左右跳
             modifier = Modifier.widthIn(min = 104.dp),
             textAlign = TextAlign.End,
@@ -1208,6 +1263,13 @@ private fun CategoryPickerSheet(
     onDismiss: () -> Unit,
     onPick: (Long) -> Unit
 ) {
+    // 跟筛选页一致：一级分类平铺，点一下展开它的二级。
+    // 之前是一律展开全量二级，分类一多就得长距离拖到底才能找到目标。
+    var expandedParentId by remember { mutableStateOf<Long?>(null) }
+    val parents = remember(categories) {
+        categories.filter { it.parentId == null }.sortedBy { it.sortOrder }
+    }
+
     SheetDialog(onDismiss = onDismiss, heightFraction = 0.7f) {
         Text(
             "改成哪个分类",
@@ -1218,43 +1280,88 @@ private fun CategoryPickerSheet(
         )
         Spacer(Modifier.height(10.dp))
         LazyColumn(contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
-            // 只列出账单可能挂着的二级分类（parentId != null）
-            val parents = categories.filter { it.parentId == null }
-            parents.forEach { parent ->
-                val kids = categories.filter { it.parentId == parent.id }
-                if (kids.isEmpty()) return@forEach
-                item(key = "h-${parent.id}") {
-                    Text(
-                        parent.name,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp)
-                    )
+            items(parents, key = { it.id }) { parent ->
+                val kids = remember(categories, parent.id) {
+                    categories.filter { it.parentId == parent.id }.sortedBy { it.sortOrder }
                 }
-                items(kids, key = { it.id }) { c ->
+                val expanded = expandedParentId == parent.id
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 4.dp)
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .clickable { onPick(c.id) }
-                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable {
+                                expandedParentId = if (expanded) null else parent.id
+                            }
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconTile(
-                            iconKey = c.iconKey,
-                            size = 28.dp,
-                            cornerRadius = 9.dp,
-                            overrideColor = AppIcons.colorFromKey(c.colorKey)
+                            iconKey = parent.iconKey,
+                            size = 34.dp,
+                            cornerRadius = 11.dp,
+                            overrideColor = AppIcons.colorFromKey(parent.colorKey)
                         )
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            c.name,
-                            fontSize = 14.sp,
+                            parent.name,
+                            modifier = Modifier.weight(1f),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        Icon(
+                            Icons.Outlined.KeyboardArrowDown,
+                            contentDescription = if (expanded) "收起" else "展开",
+                            modifier = Modifier
+                                .size(20.dp)
+                                .graphicsLayer { rotationZ = if (expanded) 180f else 0f },
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (expanded) {
+                        Spacer(Modifier.height(6.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                                .padding(vertical = 4.dp, horizontal = 6.dp)
+                        ) {
+                            kids.forEach { c ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { onPick(c.id) }
+                                        .padding(horizontal = 8.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    IconTile(
+                                        iconKey = c.iconKey,
+                                        size = 28.dp,
+                                        cornerRadius = 9.dp,
+                                        overrideColor = AppIcons.colorFromKey(parent.colorKey)
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(
+                                        c.name,
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

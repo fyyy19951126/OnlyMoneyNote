@@ -3,6 +3,11 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      应用内更新：App 自己把新 APK 下到 cacheDir，再拉起系统安装页。
+      没有这个权限，Android 8 之后安装页根本弹不出来（会被当成恶意行为拦掉）。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
       关掉系统自动备份。
@@ -113,6 +118,21 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_add" />
         </receiver>
+
+        <!--
+          应用内更新用的 FileProvider：新 APK 下到 cacheDir/update 之后，
+          不能直接用 file:// 交给安装器（Android 7 起会抛 FileUriExposedException），
+          必须换成 content:// 并临时授权给安装页。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updatefile"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_file_paths" />
+        </provider>
     </application>
 
 </manifest>

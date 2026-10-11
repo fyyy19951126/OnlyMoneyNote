@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [CategoryEntity::class, TransactionEntity::class, AccountEntity::class],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -123,6 +123,39 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "UPDATE `account` SET iconKey = 'emoji:微' WHERE iconKey = 'brand:wechat'"
                 )
+            }
+        }
+    /**
+         * v6 -> v7：报销模型重构 —— 拆成「属于报销池」和「已报销」两件事。
+         *
+         * 原来只有一个 `reimbursed`，语义是「这笔跟报销有关」，报销页 `WHERE reimbursed=1`
+         * 把报销池全列出来。现在报销页要分「已报销 / 未报销」两个 tab，
+         * 一个布尔表达不了，必须拆：
+         * - `isReimburse`：进不进报销池（= 老的 reimbursed）
+         * - `reimbursed`：报没报过（新增，老数据一律 false）
+         * - `reimburseDateMillis`：实际报销日期
+         *
+         * ⚠️ 迁移策略：老的 reimbursed=1 → isReimburse=1 且 reimbursed=0。
+         * 也就是**全部退回未报销**。为什么不猜哪些报过了？
+         * 老数据只有一个布尔，报销状态本来就是这个布尔，
+         * 猜「已报」等于凭空造一笔收入冲销，账目会错。
+         * 退回未报销只是让用户多点一次右滑，不会丢钱。
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `transaction` ADD COLUMN `isReimburse` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `transaction` ADD COLUMN `reimburseDateMillis` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_transaction_isReimburse` ON `transaction` (`isReimburse`)"
+                )
+                // 老的 reimbursed=1 全是「属于报销池但不知道报没报」
+                db.execSQL("UPDATE `transaction` SET `isReimburse` = 1 WHERE `reimbursed` = 1")
+                // 并把 reimbursed 归零，表示「都还没报」
+                db.execSQL("UPDATE `transaction` SET `reimbursed` = 0")
             }
         }
     }

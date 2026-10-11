@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,14 +23,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import kotlin.math.roundToInt
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -44,7 +41,6 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -118,8 +114,6 @@ fun CategoryScreen(
 ) {
     // 0 = 支出，1 = 收入
     var tab by remember { mutableStateOf(0) }
-    // 正在管理（弹窗中）的一级分类
-    var managing by remember { mutableStateOf<CategoryEntity?>(null) }
     // 编辑（改名换图标）目标
     var editing by remember { mutableStateOf<CategoryEntity?>(null) }
     // 新建弹层：null 没开；否则 Pair(是否二级, 父id)
@@ -137,23 +131,13 @@ fun CategoryScreen(
     val parents = remember(allParents, tab) {
         allParents.filter { it.type == tab }.sortedBy { it.sortOrder }
     }
-    // 拖动排序用的**本地顺序**：拖的过程中实时改这个列表（配合 animateItemPlacement
-    // 让别的卡片滑开让位），松手才一次性写库。
-    // 之前是「拖的时候什么反应都没有，松手才跳位」，落点全靠猜。
+    // 上移/下移用本地顺序先算再提交，列表动画才跟得上
     var localParents by remember(tab, parents) { mutableStateOf(parents) }
-    // 正在拖动的一级卡片 id：被拖的那张不参与位移动画（见 CategoryGridCard）
-    var draggingParentId by remember { mutableStateOf<Long?>(null) }
+    // 展开着的一级分类：点一下展开、再点收起，同一时刻只展开一个
+    var expandedId by remember { mutableStateOf<Long?>(null) }
 
     // 页面级强调色统一主题蓝（支付宝式）；收支区分只留在顶部切换胶囊上
     val accent = AppTheme.primary
-
-    // 网格单格尺寸（px）：拖动排序时把位移换算成跨几行几列要用到。
-    // 与 LazyVerticalGrid 的参数保持一致：2 列、左右 14dp、中间间距 12dp、卡片 76dp 高
-    val density = LocalDensity.current
-    val screenW = LocalConfiguration.current.screenWidthDp.dp
-    val cellW = screenW - 14.dp * 2 - 12.dp      // 两列 + 一个间距
-    val cellWPx = with(density) { (cellW / 2).toPx() }
-    val cellHPx = with(density) { (60.dp + 20.dp).toPx() }   // 卡片高 + 行间距
 
     Box(
         modifier = Modifier
@@ -176,28 +160,28 @@ fun CategoryScreen(
                 )
             }
 
-            /* ---------- 操作提示（数量文案按用户要求去掉了，太挤也不好看） ---------- */
+/* ---------- 操作提示 ---------- */
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(accent)
-                )
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    "点卡片管理子分类 · 长按拖动排序",
-                    fontSize = 11.5.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-                )
-            }
+    modifier = Modifier
+     .fillMaxWidth()
+    .padding(horizontal = 16.dp, vertical = 6.dp),
+       verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+         modifier = Modifier
+          .size(6.dp)
+                .clip(CircleShape)
+         .background(accent)
+  )
+        Spacer(Modifier.width(7.dp))
+      Text(
+      "点一级分类展开二级 · 用箭头调顺序",
+ fontSize = 11.5.sp,
+          color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+        )
+       }
 
-            /* ---------- 两列网格 ---------- */
+          /* ---------- 一级分类列表：点一下就地展开二级 ---------- */
             if (parents.isEmpty()) {
                 // 空状态：别让用户对着一片空白猜
                 Column(
@@ -220,63 +204,50 @@ fun CategoryScreen(
                         )
                     }
                     Spacer(Modifier.height(12.dp))
-                    Text(
-                        "还没有${if (tab == 0) "支出" else "收入"}分类",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "点右下角 + 新建一个",
-                        fontSize = 12.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(
-                        start = 14.dp, end = 14.dp, top = 4.dp, bottom = 110.dp
-                    ),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    // 行距加大到 20dp：之前 12dp 太挤，点卡片容易误触到隔壁
-                    verticalArrangement = Arrangement.spacedBy(20.dp)
-                ) {
-                    itemsIndexed(localParents, key = { _, it -> it.id }) { idx, p ->
-                        CategoryGridCard(
-                            category = p,
-                            index = idx,
-                            cellW = cellWPx,
-                            cellH = cellHPx,
-                            total = localParents.size,
-                            // 被拖的那张不做位移动画：它的落点由 translation 精确补偿，
-                            // 再叠一层 animateItemPlacement 会「先弹回去再滑过来」。
-                            modifier = if (draggingParentId == p.id) Modifier
-                            else Modifier.animateItemPlacement(),
-                            onDraggingChanged = { on ->
-                                draggingParentId = if (on) p.id else null
-                            },
-                            // 拖动过程中实时换位：只改本地顺序，不写库
-                            onMoveTo = { target ->
-                                val list = localParents.toMutableList()
-                                val from = list.indexOf(p)
-                                if (from in list.indices && target in list.indices && from != target) {
-                                    list.removeAt(from)
-                                    list.add(target, p)
-                                    localParents = list
-                                }
-                            },
-                            // 松手一次性提交最终顺序
-                            onDragFinished = {
-                                onReorder(null, localParents.map { it.id })
-                            },
-                            onClick = { managing = p }
-                        )
-                    }
-                }
-            }
+Text(
+       "还没有${if (tab == 0) "支出" else "收入"}分类",
+    fontSize = 15.sp,
+        fontWeight = FontWeight.Medium,
+        color = MaterialTheme.colorScheme.onSurface
+      )
+        Spacer(Modifier.height(4.dp))
+            Text(
+         "点右下角 + 新建一个",
+ fontSize = 12.5.sp,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+  }
+      } else {
+          LazyColumn(
+  modifier = Modifier.fillMaxSize(),
+       contentPadding = PaddingValues(
+start = 14.dp, end = 14.dp, top = 4.dp, bottom = 110.dp
+          ),
+      verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+          itemsIndexed(localParents, key = { _, it -> it.id }) { _, p ->
+            val expanded = expandedId == p.id
+   val children = remember(categories, p.id) {
+        categories.filter { it.parentId == p.id }.sortedBy { it.sortOrder }
+   }
+            CategoryParentRow(
+                category = p,
+                expanded = expanded,
+      children = children,
+         modifier = Modifier.animateItemPlacement(),
+  onToggle = { expandedId = if (expanded) null else p.id },
+         onEditParent = { editing = p },
+          onAddChild = { creating = true to p.id },
+            onMove = { up -> onMove(p, up) },
+          onEditChild = { editing = it },
+                onDeleteChild = { requestDelete(it) },
+          onReorderChildren = { ids -> onReorder(p.id, ids) }
+            )
+          }
         }
+    }
+
+        }   // 关掉 Column
 
         /* ---------- 新建一级分类 FAB：主题蓝，跟全局一致 ---------- */
         FloatingActionButton(
@@ -291,31 +262,7 @@ fun CategoryScreen(
         ) {
             Icon(Icons.Outlined.Add, contentDescription = "新建分类")
         }
-    }
-
-    /* ---------- 二级管理弹窗 ---------- */
-    managing?.let { p ->
-        ManageCategoryDialog(
-            parent = p,
-            children = categories.filter { it.parentId == p.id }.sortedBy { it.sortOrder },
-            onDismiss = { managing = null },
-            onAddChild = { creating = true to p.id },
-            onEditChild = { editing = it },
-            onMoveChild = { c, up -> onMove(c, up) },
-            onDeleteChild = { requestDelete(it) },
-            onDeleteParent = {
-                requestDelete(p)
-                managing = null
-            },
-            onEditParent = {
-                editing = p
-                managing = null
-            },
-            onReorderChildren = { orderedIds ->
-                onReorder(p.id, orderedIds)
-            }
-        )
-    }
+    }   // 关掉最外层 Box
 
     /* ---------- 新建 / 编辑弹层 ---------- */
     if (creating != null) {
@@ -370,26 +317,57 @@ fun CategoryScreen(
     }
 }
 
+/**
+ * 删除有账单的分类：选一个目标分类转移过去。
+ *
+ * 2026-10-11 用户要求「跟上面的一级/二级两层保持一致」——
+ * 之前是一长条平铺的候选分类（父级和子级混在一起，还各带各的图标色），
+ * 分类一多根本认不出哪个是哪个的子类。现在按一级分类分组，
+ * 点一级展开它的二级，跟分类管理页是同一套交互和外观。
+ */
 @Composable
 private fun ReassignDialog(
     from: CategoryEntity,
     usedCount: Int,
     candidates: List<CategoryEntity>,
-    /** 全量分类，用来解析候选分类的图标块颜色（二级继承一级） */
+    /** 全量分类，用来把候选分类按父子关系分组 */
     allCategories: List<CategoryEntity>,
     onDismiss: () -> Unit,
     onPick: (CategoryEntity) -> Unit
 ) {
+    // 被删的这个分类可能是一级也可能是二级，它自己所在的父级要一起从候选里排掉
+    val byParent = remember(candidates, allCategories) {
+        val parentIds = candidates.filter { it.parentId == null }.map { it.id }.toSet()
+        val parentOf = allCategories.associate { it.id to it.parentId }
+        candidates.groupBy { c ->
+            if (c.parentId == null) "自身一级"
+            // 父分类正好在候选里（不会被删），归到它下面一起显示
+            else if (c.parentId in parentIds) "子:${c.parentId}" else "其他"
+        }
+    }
+    // 自身二级候选（它爹不会被删，所以那组可以当一级直接列出来）
+    val ownChildren = byParent["自身一级"]?.filter { it.parentId != null } ?: emptyList()
+    val otherParents = byParent["自身一级"]?.filter { it.parentId == null } ?: emptyList()
+    var expandedKey by remember { mutableStateOf<String?>(null) }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(24.dp),
         containerColor = MaterialTheme.colorScheme.surface,
         title = {
-            Text(
-                "「${from.name}」名下有 $usedCount 笔账单",
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold
-            )
+            Column {
+                Text(
+                    "「${from.name}」名下有 $usedCount 笔账单",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "选一个分类承接这些账单：",
+                    fontSize = 12.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         },
         text = {
             if (candidates.isEmpty()) {
@@ -399,43 +377,100 @@ private fun ReassignDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                Column {
-                    Text(
-                        "选一个分类，把这些账单转移过去：",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    LazyColumn(
-                        modifier = Modifier.height(280.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(candidates, key = { it.id }) { c ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                                    )
-                                    .clickable { onPick(c) }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                IconTile(
-                                    iconKey = c.iconKey, size = 34.dp, cornerRadius = 10.dp,
-                                    overrideColor = AppIcons.colorFromKey(
-                                        allCategories.firstOrNull { it.id == c.parentId }?.colorKey
-                                            ?: c.colorKey
-                                    )
-                                )
-                                Spacer(Modifier.width(10.dp))
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 340.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // —— 待删分类自己的那些二级：它们爹还在，一并列出来当一级用
+                    if (ownChildren.isNotEmpty()) {
+                        item(key = "own") {
+                            Column {
                                 Text(
-                                    c.name,
-                                    modifier = Modifier.weight(1f),
-                                    fontSize = 14.5.sp,
-                                    maxLines = 1
+                                    "「${from.name}」的二级分类",
+                                    fontSize = 11.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
                                 )
+                                ownChildren.forEach { c ->
+                                    ReassignFlatRow(
+                                        c = c,
+                                        tileColor = AppIcons.colorFromKey(from.colorKey)
+                                            ?: AppIcons.categoryTileColor(from.iconKey),
+                                        onPick = { onPick(c) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    // —— 其它一级分类，点一下展开它的二级
+                    otherParents.forEach { p ->
+                        val kids = candidates.filter { it.parentId == p.id }
+                            .sortedBy { it.sortOrder }
+                        val expanded = expandedKey == "p${p.id}"
+                        item(key = "p${p.id}") {
+                            Column {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        .clickable {
+                                            expandedKey = if (expanded) null else "p${p.id}"
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    IconTile(
+                                        iconKey = p.iconKey, size = 34.dp, cornerRadius = 10.dp,
+                                        overrideColor = AppIcons.colorFromKey(p.colorKey)
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            p.name,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1
+                                        )
+                                        Text(
+                                            if (kids.isEmpty()) "可直接转移到这里"
+                                            else "${kids.size} 个二级分类",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Icon(
+                                        Icons.Outlined.KeyboardArrowDown,
+                                        contentDescription = if (expanded) "收起" else "展开",
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .graphicsLayer { rotationZ = if (expanded) 180f else 0f },
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (expanded && kids.isNotEmpty()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = 18.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(
+                                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                            )
+                                            .padding(vertical = 6.dp, horizontal = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        kids.forEach { c ->
+                                            ReassignFlatRow(
+                                                c = c,
+                                                tileColor = AppIcons.colorFromKey(p.colorKey),
+                                                onPick = { onPick(c) },
+                                                compact = true
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -443,10 +478,41 @@ private fun ReassignDialog(
             }
         },
         confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
+}
+
+/** 转移列表里的一行 */
+@Composable
+private fun ReassignFlatRow(
+    c: CategoryEntity,
+    tileColor: Color?,
+    onPick: () -> Unit,
+    compact: Boolean = false
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onPick)
+            .padding(horizontal = 6.dp, vertical = if (compact) 6.dp else 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconTile(
+            iconKey = c.iconKey,
+            size = if (compact) 30.dp else 34.dp,
+            cornerRadius = 10.dp,
+            overrideColor = tileColor
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            c.name,
+            modifier = Modifier.weight(1f),
+            fontSize = if (compact) 14.5.sp else 15.sp,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -494,429 +560,306 @@ private fun SegmentedTab(
 }
 
 /* ------------------------------------------------------------------ */
-/* 一级分类网格卡片                                                    */
-/* ------------------------------------------------------------------ */
-
-@Composable
-private fun CategoryGridCard(
-    category: CategoryEntity,
-    /** 本卡片在网格里的位置（拖动过程中会随本地顺序实时变） */
-    index: Int,
-    /** 网格单格宽高（px），用来把拖动位移换算成跨了几行几列 */
-    cellW: Float,
-    cellH: Float,
-    /** 一级分类总数，用来把落点限制在范围内 */
-    total: Int,
-    /** 外层给的位移动画（被拖的那张传 Modifier，不参与 animateItemPlacement） */
-    modifier: Modifier = Modifier,
-    /** 拖动状态上报：外层据此决定谁不做位移动画 */
-    onDraggingChanged: (Boolean) -> Unit = {},
-    /** 拖动过程中实时换位（只改本地顺序，松手才写库） */
-    onMoveTo: (Int) -> Unit = {},
-    /** 松手 / 取消：提交当前本地顺序 */
-    onDragFinished: () -> Unit = {},
-    onClick: () -> Unit
-) {
-    // 支付宝式卡片：白底 + 分类组色的图标块，颜色跟着分类内容走，
-    // 和账单列表里的彩色图标一套观感；不再按收支类型整卡染色。
-    val haptics = LocalHapticFeedback.current
-    var dragging by remember { mutableStateOf(false) }
-    // 拖动中的实时位移：卡片跟着手指走，松手归位（网格自己会做位置交换动画）
-    var dragOffset by remember { mutableStateOf(Offset.Zero) }
-    // 手势闭包里必须读**最新**的 index/total：拖动过程中列表会实时重排，
-    // 用捕获的旧值算落点会越拖越偏。
-    val curIndex by rememberUpdatedState(index)
-    val curTotal by rememberUpdatedState(total)
-
-    Surface(
-        modifier = modifier
-            .zIndex(if (dragging) 1f else 0f)
-            .fillMaxWidth()
-            // 60dp 高：只剩图标 + 名称，不用给徽章留第二行了
-            .height(60.dp)
-            .clip(RoundedCornerShape(16.dp))
-            // 长按拖动排序：位移换算成「跨了几行几列」得出落点
-            .pointerInput(category.id) {
-                var acc = Offset.Zero
-                detectDragGesturesAfterLongPress(
-                    onDragStart = {
-                        dragging = true
-                        onDraggingChanged(true)
-                        acc = Offset.Zero
-                        dragOffset = Offset.Zero
-                        // 起手给一下震动，明确告诉用户「已经进入拖动模式」，
-                        // 不然长按和误触难以区分
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    },
-                    onDrag = { change, amount ->
-                        change.consume()
-                        acc += amount
-                        // 网格是 2 列：行位移贡献 ±2，列位移贡献 ±1
-                        val rowShift = (acc.y / cellH).roundToInt()
-                        val colShift = (acc.x / cellW).roundToInt()
-                        val target = (curIndex + rowShift * 2 + colShift)
-                            .coerceIn(0, (curTotal - 1).coerceAtLeast(0))
-                        if (target != curIndex) {
-                            // 换位之后卡片基线挪了，把这段差值从位移里扣掉，
-                            // 卡片才继续停在手指底下，不会「跳一下」。
-                            val dCol = (target % 2) - (curIndex % 2)
-                            val dRow = (target / 2) - (curIndex / 2)
-                            acc -= Offset(dCol * cellW, dRow * cellH)
-                            onMoveTo(target)
-                        }
-                        dragOffset = acc
-                    },
-                    onDragEnd = {
-                        dragging = false
-                        onDraggingChanged(false)
-                        dragOffset = Offset.Zero
-                        onDragFinished()
-                    },
-                    onDragCancel = {
-                        dragging = false
-                        onDraggingChanged(false)
-                        dragOffset = Offset.Zero
-                        onDragFinished()
-                    }
-                )
-            }
-            .graphicsLayer {
-                translationX = dragOffset.x
-                translationY = dragOffset.y
-                if (dragging) {
-                    scaleX = 1.05f
-                    scaleY = 1.05f
-                    shadowElevation = 18f
-                }
-            }
-            .clickable(onClick = onClick),
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(16.dp),
-        // 拖动时抬起来一点，跟底下的卡片拉开层级。
-        // 描边用**中性 outline**，不用主题色：主题一换成红色系，
-        // 主题色描边就变成一个红框挂在卡片上，跟「危险/删除」撞信号。
-        shadowElevation = if (dragging) 6.dp else 1.dp,
-        border = if (dragging) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-        } else null
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 12.dp, end = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // 彩色分类图标块：优先用一级分类自定义的配色
-            IconTile(
-                iconKey = category.iconKey, size = 40.dp, cornerRadius = 13.dp,
-                overrideColor = AppIcons.colorFromKey(category.colorKey)
-            )
-            Spacer(Modifier.width(10.dp))
-            // 只有名字：数量徽章去掉了（用户觉得丑，而且「10 个子分类」还会折行）
-            Text(
-                category.name,
-                modifier = Modifier.weight(1f),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-            )
-            // 三条横线：跟二级行同一套把手，告诉用户「长按可以拖动排序」
-            DragLines(
-                modifier = Modifier.padding(end = 10.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-            )
-        }
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* 二级管理弹窗（长按/点卡片弹出）                                       */
+/* 一级分类行（点一下展开二级）                                          */
 /* ------------------------------------------------------------------ */
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ManageCategoryDialog(
-    parent: CategoryEntity,
+private fun CategoryParentRow(
+    category: CategoryEntity,
+    expanded: Boolean,
     children: List<CategoryEntity>,
-    onDismiss: () -> Unit,
-    onAddChild: () -> Unit,
-    onEditChild: (CategoryEntity) -> Unit,
-    onMoveChild: (CategoryEntity, Boolean) -> Unit,
-    onDeleteChild: (CategoryEntity) -> Unit,
-    onDeleteParent: () -> Unit,
+    modifier: Modifier = Modifier,
+    onToggle: () -> Unit,
     onEditParent: () -> Unit,
+    onAddChild: () -> Unit,
+    /** 上移 / 下移一级分类。true = 上移 */
+    onMove: (Boolean) -> Unit = { _ -> },
+    onEditChild: (CategoryEntity) -> Unit,
+    onDeleteChild: (CategoryEntity) -> Unit,
     onReorderChildren: (List<Long>) -> Unit
 ) {
-    // 行高实测值（px）：拖动落点按「拖过了几行」算，写死 52dp 跟真实行高对不上，
-    // 拖得越多累计误差越大（表现就是「拖到第五个却排到第三」）。
-    var rowHeightPx by remember { mutableFloatStateOf(0f) }
-    // 正在拖动的二级行：它自己不做位移动画，别的行才滑开让位
-    var draggingChildId by remember { mutableStateOf<Long?>(null) }
-    // 弹窗里的强调色（选中态、拖动高亮、按钮）统一主题蓝，跟页面一致
-    val accent = AppTheme.primary
-    // 分类本体色：一级自定义配色优先，没自定义才回退到图标分组色。
-    // 标题图标块、每一行的图标块、添加二级入口全用这一个色，
-    // 这样「一个分类 = 一个颜色」在弹窗里也是统一的。
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            // 点整行 = 展开/收起二级。
+            // 这里只挂 clickable，不叠 pointerInput：detectDragGesturesAfterLongPress
+            // 哪怕排在后面也会先吃掉 down，click 收不到，整行点了没反应。
+            // 排序改用行内的上移/下移按钮（见下），稳当且不用手势。
+            .clickable(onClick = onToggle),
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(16.dp),
+        shadowElevation = 1.dp
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconTile(
+                    iconKey = category.iconKey, size = 40.dp, cornerRadius = 13.dp,
+                    overrideColor = AppIcons.colorFromKey(category.colorKey)
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (expanded) "${category.name} ▾" else category.name,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    Text(
+                        if (children.isEmpty()) "暂无二级分类" else "${children.size} 个二级分类",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        maxLines = 1
+                    )
+                }
+                // 排序：上移 / 下移。不用长按拖动 —— 拖动跟整行点击抢手势，
+                // 一抢整行就点不动了。两个箭头 + 编辑都收在行内，操作反而更直白。
+                IconButton(
+                    onClick = { onMove(true) },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        Icons.Outlined.KeyboardArrowUp, "上移「${category.name}」",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(
+                    onClick = { onMove(false) },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        Icons.Outlined.KeyboardArrowDown, "下移「${category.name}」",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                // 编辑一级分类：改名 / 换图标 / 删除都在里面
+                IconButton(onClick = onEditParent, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        Icons.Outlined.Edit, "编辑「${category.name}」",
+                        modifier = Modifier.size(17.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+if (expanded) {
+     CategoryChildrenPanel(
+         parent = category,
+    children = children,
+        onEditChild = onEditChild,
+     onDeleteChild = onDeleteChild,
+      onReorderChildren = onReorderChildren,
+     onAddChild = onAddChild
+  )
+  }
+        }
+    }
+}
+
+/**
+ * 展开后的一级分类下面的二级分类区。
+ *
+ * 单独拆出来是因为删除分类时的「转移账单」选择器要复用同一套外观，
+ * 两边长得一样，用户不用重新学一次操作。
+ */
+@Composable
+internal fun CategoryChildrenPanel(
+    parent: CategoryEntity,
+    children: List<CategoryEntity>,
+    onEditChild: (CategoryEntity) -> Unit,
+    onDeleteChild: (CategoryEntity) -> Unit,
+    onReorderChildren: (List<Long>) -> Unit,
+    onAddChild: () -> Unit,
+    /** 转移选择器里不需要拖动排序 */
+    sortable: Boolean = true,
+    /** 每行的额外点击动作（转移模式：点这一行 = 选它） */
+    onPick: ((CategoryEntity) -> Unit)? = null,
+    /** 顶部一行提示，转移模式下显示 */
+    hint: String? = null
+) {
     val tileColor = AppIcons.colorFromKey(parent.colorKey)
         ?: AppIcons.categoryTileColor(parent.iconKey)
-    // 二级分类的本地顺序（拖动时实时变，松手提交）
-    var childOrder by remember(children) {
-        mutableStateOf(children.map { it.id })
-    }
+    var rowHeightPx by remember { mutableFloatStateOf(0f) }
+    var draggingChildId by remember { mutableStateOf<Long?>(null) }
+    var childOrder by remember(children) { mutableStateOf(children.map { it.id }) }
     val orderedChildren = remember(children, childOrder) {
         val byId = children.associateBy { it.id }
         childOrder.mapNotNull { byId[it] } + children.filter { it.id !in childOrder }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(24.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
-        title = {
-            // 整条标题可点 → 直接进「编辑这个一级分类」（改名 / 换图标 / 换配色 / 删除都在里面）。
-            // 底部那两个「删除 / 修改」文字按钮去掉了：入口重复，还占掉一行高度。
-            Row(
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp))
+            .background(tileColor.copy(alpha = 0.06f))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        if (hint != null) {
+            Text(
+                hint,
+                fontSize = 11.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            )
+        }
+        if (orderedChildren.isEmpty()) {
+            Text(
+                "还没有二级分类，点下面「添加二级分类」建一个",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onEditParent)
-                    .padding(vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // 彩色图标块，跟网格卡片**同一个颜色**（一级自定义配色）
-                IconTile(
-                    iconKey = parent.iconKey, size = 40.dp, cornerRadius = 12.dp,
-                    overrideColor = tileColor
-                )
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(parent.name, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "点一下改名 / 换图标 / 删除",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Icon(
-                    Icons.Outlined.Edit, "编辑这个一级分类",
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        text = {
-            Column {
-                if (orderedChildren.isEmpty()) {
-                    // 空状态用分类本体色打底，跟卡片图标块一个色系
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(tileColor.copy(alpha = 0.08f))
-                            .padding(vertical = 20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            "还没有子分类",
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            "点下面的「添加二级分类」建一个",
-                            fontSize = 11.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    // 二级列表：LazyColumn + animateItemPlacement，
-                    // 拖动换位时其他行有滑开让位的动画（之前是普通 Column，瞬间跳位）。
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 300.dp)
-                    ) {
-                        items(orderedChildren, key = { it.id }) { c ->
-                            ChildManageRow(
-                                child = c,
-                                // 二级分类配色永远跟一级走
-                                tileColor = tileColor,
-                                modifier = if (draggingChildId == c.id) Modifier
-                                else Modifier.animateItemPlacement(),
-                                onDraggingChanged = { on ->
-                                    draggingChildId = if (on) c.id else null
-                                },
-                                onEdit = { onEditChild(c) },
-                                onDragBy = { steps ->
-                                    val cur = childOrder.toMutableList()
-                                    val from = cur.indexOf(c.id)
-                                    if (from >= 0) {
-                                        cur.removeAt(from)
-                                        cur.add((from + steps).coerceIn(0, cur.size), c.id)
-                                        childOrder = cur
-                                    }
-                                },
-                                onDragEnd = {
-                                    onReorderChildren(childOrder)
-                                },
-                                rowHeightPx = rowHeightPx,
-                                onRowMeasured = { h ->
-                                    if (rowHeightPx == 0f) rowHeightPx = h
-                                }
-                            )
+                    .padding(vertical = 12.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        } else {
+            orderedChildren.forEachIndexed { i, c ->
+                ChildPickRow(
+                    child = c,
+tileColor = tileColor,
+                    onClick = {
+                        when {
+                            onPick != null -> onPick(c)
+                            else -> onEditChild(c)
                         }
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                // 添加二级分类：底色用分类本体色，跟这个弹窗里的其他色块一致
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(tileColor.copy(alpha = 0.08f))
-                        .clickable(onClick = onAddChild)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(tileColor),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Outlined.Add, null,
-                            modifier = Modifier.size(19.dp),
-                            tint = Color.White
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        "添加二级分类",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
+                    },
+                    sortable = sortable,
+                    onDraggingChanged = { draggingChildId = if (it) c.id else null },
+                    onDragBy = { steps ->
+                        val cur = childOrder.toMutableList()
+                        val from = cur.indexOf(c.id)
+                        if (from >= 0) {
+                            cur.removeAt(from)
+                            cur.add((from + steps).coerceIn(0, cur.size), c.id)
+                            childOrder = cur
+                        }
+                    },
+                    onDragEnd = { onReorderChildren(childOrder) },
+                    rowHeightPx = rowHeightPx,
+                    onRowMeasured = { h -> if (rowHeightPx == 0f) rowHeightPx = h }
+                )
             }
-        },
-        // 底部不再有「删除 / 修改」：点标题就进编辑层，删除在编辑层里
-        confirmButton = {},
-        dismissButton = {}
-    )
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(tileColor.copy(alpha = 0.12f))
+                .clickable(onClick = onAddChild)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(tileColor),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Outlined.Add, null, modifier = Modifier.size(17.dp), tint = Color.White)
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "添加二级分类",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
 }
 
-/** 弹窗里的二级分类行 */
+/** 二级分类行：名字可点（编辑 / 选中），长按可拖动排序 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChildManageRow(
+private fun ChildPickRow(
     child: CategoryEntity,
-    /** 图标块颜色：二级分类永远跟一级走 */
-    tileColor: Color? = null,
+    tileColor: Color?,
     modifier: Modifier = Modifier,
-    onEdit: () -> Unit,
-    onDragBy: (Int) -> Unit,
-    onDragEnd: () -> Unit,
-    /** 拖动状态上报（外层据此决定这一行做不做位移动画） */
+    onClick: () -> Unit,
+    sortable: Boolean,
     onDraggingChanged: (Boolean) -> Unit = {},
-    /** 实测行高（px），0 = 还没测到 */
+    onDragBy: (Int) -> Unit = {},
+    onDragEnd: () -> Unit = {},
     rowHeightPx: Float,
     onRowMeasured: (Float) -> Unit = {}
 ) {
     val haptics = LocalHapticFeedback.current
     var dragAccum by remember { mutableStateOf(0f) }
     var dragActive by remember { mutableStateOf(false) }
-    // 落点用的行高：优先实测值，没测到之前按 52dp 兜底
     val rowH = if (rowHeightPx > 0f) rowHeightPx
     else with(LocalDensity.current) { 52.dp.toPx() }
 
-            Row(
+    Row(
         modifier = modifier
             .fillMaxWidth()
             .onSizeChanged { if (rowHeightPx == 0f) onRowMeasured(it.height.toFloat()) }
-            // 拖动中的反馈：**中性色**浮起（灰底 + 浅描边 + 阴影 + 轻微放大）。
-            // 之前用主题色描边，主题一换成红色系就变成一个红框，
-            // 跟「删除/危险」同一个信号，看着非常不协调（用户反馈）。
             .clip(RoundedCornerShape(14.dp))
             .background(
                 if (dragActive) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
-                else Color.Transparent,
-                RoundedCornerShape(14.dp)
+                else Color.Transparent
             )
+            .clickable(onClick = onClick)
+            // 排在 clickable 之后（更内层），长按成立前不消费事件，单击才有效
             .then(
-                if (dragActive) Modifier.border(
-                    1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp)
-                ) else Modifier
-            )
-            .graphicsLayer {
-                translationY = if (dragActive) dragAccum else 0f
-                if (dragActive) {
-                    scaleX = 1.03f
-                    scaleY = 1.03f
-                    shadowElevation = 18f
-                }
-            }
-            .pointerInput(child.id) {
-                detectDragGesturesAfterLongPress(
-                    onDragStart = {
-                        dragAccum = 0f
-                        dragActive = true
-                        onDraggingChanged(true)
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    },
-                    onDrag = { change, amount ->
-                        change.consume()
-                        dragAccum += amount.y
-                        // 拖过 0.6 行就换位：既跟手，又不会在临界点来回抖动
-                        val steps = (dragAccum / (rowH * 0.6f)).toInt()
-                        if (steps != 0) {
-                            onDragBy(steps)
-                            // 换位后基线挪了一行，把这段扣掉，行才继续停在手指底下
-                            dragAccum -= steps * rowH
+                if (sortable) Modifier.pointerInput(child.id) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = {
+                            dragAccum = 0f
+                            dragActive = true
+                            onDraggingChanged(true)
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        },
+                        onDrag = { change, amount ->
+                            change.consume()
+                            dragAccum += amount.y
+                            val steps = (dragAccum / (rowH * 0.6f)).toInt()
+                            if (steps != 0) {
+                                onDragBy(steps)
+                                dragAccum -= steps * rowH
+                            }
+                        },
+                        onDragEnd = {
+                            dragActive = false; dragAccum = 0f
+                            onDraggingChanged(false); onDragEnd()
+                        },
+                        onDragCancel = {
+                            dragActive = false; dragAccum = 0f
+                            onDraggingChanged(false); onDragEnd()
                         }
-                    },
-                    onDragEnd = {
-                        dragActive = false; dragAccum = 0f
-                        onDraggingChanged(false); onDragEnd()
-                    },
-                    onDragCancel = {
-                        dragActive = false; dragAccum = 0f
-                        onDraggingChanged(false); onDragEnd()
-                    }
-                )
-            }
+                    )
+                } else Modifier
+            )
             .padding(horizontal = 8.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 彩色分类图标块（组色底 + 白图标），跟一级卡片同款
-        IconTile(
-            iconKey = child.iconKey, size = 38.dp, cornerRadius = 11.dp,
-            overrideColor = tileColor
-        )
+        IconTile(iconKey = child.iconKey, size = 36.dp, cornerRadius = 11.dp, overrideColor = tileColor)
         Spacer(Modifier.width(12.dp))
         Text(
             child.name,
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onEdit)
-                .padding(vertical = 6.dp),
-            fontSize = 16.5.sp,
-            fontWeight = FontWeight.Medium
+            modifier = Modifier.weight(1f),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
         )
-        // 只剩一个三条横线把手：长按拖动排序。
-        // 原来的 ⋮ 菜单（编辑/上移/下移/删除）整个去掉了 —— 编辑和删除点名字就能进，
-        // 上下移动靠拖，菜单里那几项全是重复入口。
-        DragLines(
-            modifier = Modifier.padding(horizontal = 6.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        )
+        if (sortable) {
+            DragLines(
+                modifier = Modifier.padding(horizontal = 6.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+        }
     }
 }
 

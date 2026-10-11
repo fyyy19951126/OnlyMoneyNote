@@ -42,6 +42,8 @@ object UpdateChecker {
         val versionName: String,
         /** 蓝奏云（或任何）下载页链接 */
         val url: String,
+        /** 直接指向 .apk 文件的地址，能空着 —— 空着就走 [url] 手动下载 */
+        val apkUrl: String = "",
         val note: String = ""
     )
 
@@ -88,6 +90,7 @@ object UpdateChecker {
             UpdateInfo(
                 versionName = o.optString("versionName", ""),
                 url = o.optString("url", ""),
+                apkUrl = o.optString("apkUrl", ""),
                 note = o.optString("note", "")
             )
         }.getOrElse { return@withContext Result.Failed("更新信息格式不对") }

@@ -51,6 +51,7 @@ import com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter
 import com.dafeng.onlymoneynote.ui.theme.AppTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 导入导出面板：首页顶栏「导入导出」图标点开就是这个。
@@ -92,6 +93,28 @@ fun ImportExportSheet(
     // 和 CSV 那条路径分开：xlsx 要走 [QianJiImporter]，而且转账要单独落。
     var pendingThird by remember { mutableStateOf<ThirdPartyPick?>(null) }
     var thirdError by remember { mutableStateOf<String?>(null) }
+
+    // ⚠️ 解析结果**不能**在 `remember {}` 里算。
+    //
+    // 2026-10-11 真机验证抓到的实锤：`remember` 的计算块跑在**主线程组合阶段**，
+    // 于是 xlsx 解析（XlsxReader 里那一堆 DOT_MATCHES_ALL 的正则扫全文）
+    // 整个跑在 UI 线程上。用户选完钱迹文件 → 弹确认框的那一瞬间主线程被堵死，
+    // ANR 弹「Only记账没有响应」，界面全黑（窗口拿不到 Surface）。
+    // 用户描述的「导入完过一会闪退」，真机上的实际形态就是这个 ANR ——
+    // 系统等 5 秒没等到响应，先弹 ANR；用户再点一下才被杀掉，看起来就像闪退。
+    //
+    // ViewModel 里那个 `withContext(Dispatchers.Default)` 白写了：
+    // UI 这边为了弹确认框，把同一个文件**又解析了一遍**，而这次是在主线程。
+    //
+    // 所以：解析放协程里，状态用 [parsingThird] 管，解析完再显示对话框。
+    // 期间弹一个「正在解析…」的进度框，让用户知道 App 没死。
+    var parsingThird by remember { mutableStateOf(false) }
+    // 解析结果。单独存而不是每次重算 —— 重算就回到主线程堵死的老路。
+    var thirdParsed by remember { mutableStateOf<ThirdPartyParse?>(null) }
+    // ⚠️ 同理，CSV 那条路（[pendingCsv]）也是 `remember(bytes) { buildPlanFromRows }`，
+    // 大 CSV 一样会把主线程堵住。CSV 解析比 xlsx 轻，但一并改掉，别留同样的坑。
+    var parsingCsv by remember { mutableStateOf(false) }
+    var csvPlan by remember { mutableStateOf<RecordsCsvImporter.Plan?>(null) }
     // 正在选哪个软件的导出文件；选完立刻弹系统文件选择器
     var pendingThirdKind by remember { mutableStateOf<ThirdPartyKind?>(null) }
     // 「选哪个软件」这一层菜单
@@ -110,7 +133,7 @@ fun ImportExportSheet(
             if (bytes == null || bytes.isEmpty()) {
                 csvError = "读不到文件内容，换一个文件试试"
             } else {
-                pendingCsv = (uri.lastPathSegment?.substringAfterLast('/') ?: "导入文件.csv") to bytes
+                pendingCsv = (queryDisplayName(context, uri) ?: "导入文件.csv") to bytes
             }
         }
     }
@@ -134,7 +157,7 @@ fun ImportExportSheet(
         if (bytes == null || bytes.isEmpty()) {
             thirdError = "读不到文件内容，换一个文件试试"
         } else {
-            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "导入文件"
+            val name = queryDisplayName(context, uri) ?: "导入文件"
             pendingThird = ThirdPartyPick(kind, name, bytes)
         }
     }
@@ -276,10 +299,50 @@ fun ImportExportSheet(
     }
 
     /* ---------------- 第三方账单：解析结果确认 ---------------- */
-    pendingThird?.let { pick ->
-        val parsed = remember(pick.kind, pick.bytes) {
-            runCatching { ThirdPartyImportSupport.parse(pick.kind, pick.bytes) }.getOrNull()
+    //
+    // ⚠️ 解析放后台跑，别放 `remember {}`。
+    // `remember` 的计算块在**主线程组合阶段**执行，xlsx 那套正则扫全文要几秒，
+    // 直接把 UI 线程堵死 → ANR →「没有响应」→ 界面全黑 → 用户看着像闪退。
+    // 抓到的实锤栈：`main → Choreographer.doFrame → Recomposer → Regex.find`。
+    //
+    // 两段式：先置 [parsingThird] 弹进度框，`LaunchedEffect` 里在 Default 调度器
+    // 解析完再写回 [thirdParsed] 触发对话框。`LaunchedEffect` 的 lambda 体本身
+    // 是在主线程调度的，所以里面必须显式 `withContext`。
+    if (parsingThird) {
+        AlertDialog(
+            onDismissRequest = {},
+            shape = RoundedCornerShape(24.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("正在解析…", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    "账单多的时候要读十几秒，别退出。",
+                    fontSize = 13.5.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {}
+        )
+    }
+
+    LaunchedEffect(pendingThird?.kind, pendingThird?.bytes) {
+        val pick = pendingThird ?: return@LaunchedEffect
+        parsingThird = true
+        // 上一次的结果先清掉：换文件时不清的话，会先闪一下上一次的确认框
+        thirdParsed = null
+        val result = withContext(kotlinx.coroutines.Dispatchers.Default) {
+            runCatching { ThirdPartyImportSupport.parse(pick.kind, pick.bytes) }
         }
+        // 解析期间用户可能已经把文件换了（pendingThird 已经不是这个 pick），
+        // 那这次的结果就是过期的，丢掉别写回去。
+        if (pendingThird != pick) return@LaunchedEffect
+        parsingThird = false
+        thirdParsed = result.getOrNull()
+    }
+
+    pendingThird?.let { pick ->
+        val parsed = thirdParsed
         if (parsed == null || (parsed.rows.isEmpty() && parsed.transfers.isEmpty())) {
             AlertDialog(
                 onDismissRequest = { pendingThird = null },
@@ -343,7 +406,11 @@ fun ImportExportSheet(
                                 append(" 笔是非人民币，已跳过（本 App 不换算汇率）。\n")
                             }
                             if (parsed.skippedBad > 0) {
-                                append("⚠ 有 ").append(parsed.skippedBad).append(" 笔读不出来，已跳过。\n")
+                                // 「读不出来」这个说法会误导用户以为是文件坏了。
+                                // 实际绝大多数是「类型」列出现了我们不认的值（不是钱/日期/金额坏）。
+                                // 说清楚点：报数量 + 说是哪种行不认，别让用户以为数据丢了。
+                                append("⚠ 有 ").append(parsed.skippedBad)
+                                append(" 笔的「类型」不认（不是支出/收入/转账/报销），已跳过。\n")
                             }
                             val noAccount = parsed.rows.count { it.accountName.isBlank() }
                             if (noAccount > 0) {
@@ -590,12 +657,41 @@ fun ImportExportSheet(
     }
 
     /* ---------------- 导入确认 ---------------- */
+    // ⚠️ 同上：CSV 也别放 `remember {}`。CSV 比 xlsx 轻，但几万行的导出一样能堵死主线程。
+    LaunchedEffect(pendingCsv) {
+        val picked = pendingCsv ?: return@LaunchedEffect
+        parsingCsv = true
+        csvPlan = null
+        val result = withContext(kotlinx.coroutines.Dispatchers.Default) {
+            runCatching { RecordsCsvImporter.buildPlan(RecordsCsvImporter.decode(picked.second)) }
+        }
+        if (pendingCsv != picked) return@LaunchedEffect
+        parsingCsv = false
+        csvPlan = result.getOrNull()
+    }
+
+    if (parsingCsv) {
+        AlertDialog(
+            onDismissRequest = {},
+            shape = RoundedCornerShape(24.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("正在解析…", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    "账单多的时候要读几秒，别退出。",
+                    fontSize = 13.5.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {}
+        )
+    }
+
     pendingCsv?.let { picked ->
         val fileName = picked.first
         val bytes = picked.second
-        val plan = remember(bytes) {
-            runCatching { RecordsCsvImporter.buildPlan(RecordsCsvImporter.decode(bytes)) }.getOrNull()
-        }
+        val plan = csvPlan
         if (plan == null || plan.txs.isEmpty()) {
             AlertDialog(
                 onDismissRequest = { pendingCsv = null },
@@ -767,4 +863,42 @@ private fun WipeOption(
             )
         )
     }
+}
+
+/**
+ * 取文件在选择器里的**显示名**。
+ *
+ * 2026-10-11 实测：直接 `uri.lastPathSegment.substringAfterLast('/')` 在 DocumentsUI 下
+ * 拿到的不是文件名，而是 `msf:65` 这种内部 id —— 弹窗里显示成「文件：msf:65」，
+ * 用户根本认不出自己选的是哪个文件。
+ *
+ * DocumentsProvider 会把真实名字放在 `DISPLAY_NAME`，不同厂商 ROM 可能放在别的列，
+ * 所以列名查不到时退回扫一遍所有 string 列，取像文件名的那个。
+ */
+private fun queryDisplayName(context: android.content.Context, uri: Uri): String? {
+    // 先试标准列
+    runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && c.moveToFirst()) {
+                val n = c.getString(idx)
+                if (!n.isNullOrBlank()) return n
+            }
+        }
+    }
+    // 兜底：在所有 string 列里找一个带扩展名的
+    runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            while (c.moveToNext()) {
+                for (i in 0 until c.columnCount) {
+                    val v = runCatching { c.getString(i) }.getOrNull()
+                    if (!v.isNullOrBlank() && ('.' in v) && ('/' !in v) && ('\\' !in v)) {
+                        return v.substringAfterLast('/').substringAfterLast('\\')
+                    }
+                }
+            }
+        }
+    }
+    // 都没有就用原始 path 末段
+    return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
 }

@@ -17,7 +17,9 @@ import com.dafeng.onlymoneynote.data.local.TxWithCategory
 import com.dafeng.onlymoneynote.data.ocr.ReceiptParser
 import com.dafeng.onlymoneynote.data.repo.BackupRepository
 import com.dafeng.onlymoneynote.data.repo.LedgerRepository
+import com.dafeng.onlymoneynote.data.repo.originIdFromNote
 import com.dafeng.onlymoneynote.data.repo.SettingsRepository
+import com.dafeng.onlymoneynote.util.ApkInstaller
 import com.dafeng.onlymoneynote.util.UpdateChecker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -28,6 +30,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -181,9 +186,28 @@ class LedgerViewModel @Inject constructor(
         }
     }
 
-    /** 全部报销账单（首页「报销」入口点进来显示这个） */
+    /**
+     * 报销池里的全部账单（首页「报销」入口点进来显示这个）。
+     * 页面上按 `reimbursed` 再切成「已报销 / 未报销」两个 tab。
+     */
     val reimbursedTxs: StateFlow<List<TxWithCategory>> =
-        ledger.observeReimbursed().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        ledger.observeReimbursePool().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** 未报销总额（分），全时段。首页/报销页顶部用这个。 */
+    val unreimbursedCents: StateFlow<Long> =
+        ledger.observeUnreimbursedCents(null, null, emptyList())
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+
+    /**
+     * 按传入的筛选范围算未报销总额。统计页用 —— 括号里要跟着年份/月份筛选联动。
+     *
+     * 参数是**范围本身**，不是 id：统计页每次换年份/月份都会 new 一个值对象，
+     * 不用 StateFlow（那会让调用方多存一份状态），
+     * 直接 `flow { emit(...) }` 包一下交给 [remember] 缓存就行。
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun unreimbursedCentsFlow(from: Long?, to: Long?, cats: List<Long>): Flow<Long> =
+        flow { emitAll(ledger.observeUnreimbursedCents(from, to, cats)) }
 
     /** 报销汇总：支出报销、收入报销各多少（分） */
     val reimburseSummary: StateFlow<Pair<Long, Long>> =
@@ -280,18 +304,25 @@ class LedgerViewModel @Inject constructor(
             val r = UpdateChecker.check(current)
             _busy.value = false
             // 结果写进 updateHint 显示在「关于」对话框里（toast 会被对话框盖住）
+            _pendingUpdate.value = null
             when (r) {
                 is UpdateChecker.Result.NotConfigured -> _updateHint.value = "还没配置更新地址"
                 is UpdateChecker.Result.UpToDate -> _updateHint.value = "已是最新版本"
                 is UpdateChecker.Result.Failed -> _updateHint.value = "连不上更新服务器"
                 is UpdateChecker.Result.Newer -> {
-                    _updateHint.value = "发现新版本 ${r.info.versionName}，正在打开下载页"
-                    runCatching {
-                        appContext.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse(r.info.url))
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    }.onFailure { _updateHint.value = "打不开下载页" }
+                    _pendingUpdate.value = r.info
+                    if (r.info.apkUrl.isBlank()) {
+                        // 没配直链：保持老行为，直接开下载页（蓝奏云）
+                        _updateHint.value = "发现新版本 ${r.info.versionName}，正在打开下载页"
+                        runCatching {
+                            appContext.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(r.info.url))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }.onFailure { _updateHint.value = "打不开下载页" }
+                    } else {
+                        _updateHint.value = "发现新版本 ${r.info.versionName}"
+                    }
                 }
             }
         }
@@ -309,7 +340,53 @@ class LedgerViewModel @Inject constructor(
     val updateHint: StateFlow<String?> = _updateHint.asStateFlow()
 
     /** 关掉「关于」时清掉上次结果，免得下次打开还挂着「已是最新版本」 */
-    fun clearUpdateHint() { _updateHint.value = null }
+    fun clearUpdateHint() {
+        _updateHint.value = null
+        _pendingUpdate.value = null
+        _apkPercent.value = null
+    }
+
+    /** 检查到的新版本。apkUrl 非空时，「关于」里给一个「下载并安装」按钮 */
+    private val _pendingUpdate = MutableStateFlow<UpdateChecker.UpdateInfo?>(null)
+    val pendingUpdate: StateFlow<UpdateChecker.UpdateInfo?> = _pendingUpdate.asStateFlow()
+
+    /** 应用内下载进度：null = 当前没在下 */
+    private val _apkPercent = MutableStateFlow<Int?>(null)
+    val apkPercent: StateFlow<Int?> = _apkPercent.asStateFlow()
+
+    /**
+     * 应用内下载并安装新版本。任何一步失败都退回「打开蓝奏云」，
+     * 不让用户卡在一个下不动的进度条上。
+     */
+    fun downloadAndInstallUpdate() {
+        val info = _pendingUpdate.value ?: return
+        if (info.apkUrl.isBlank() || _apkPercent.value != null) return
+        viewModelScope.launch {
+            _apkPercent.value = 0
+            val r = runCatching {
+                ApkInstaller.download(appContext, info.apkUrl, info.versionName) { p ->
+                    _apkPercent.value = p.percent
+                }
+            }
+            r.onSuccess { file ->
+                _apkPercent.value = null
+                runCatching { ApkInstaller.launchInstall(appContext, file) }
+                    .onFailure {
+                        _updateHint.value = "打不开安装页，改用蓝奏云手动装"
+                        runCatching {
+                            appContext.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(info.url))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }
+            }.onFailure {
+                _apkPercent.value = null
+                // 带上原因：不然只写「下载失败」根本分不清是连不上、被重定向还是要登录
+                _updateHint.value = "下载失败：${it.message ?: "未知错误"}"
+            }
+        }
+    }
 
     // ============ 统计 ============
 
@@ -455,6 +532,18 @@ class LedgerViewModel @Inject constructor(
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), StatsUiState())
+
+    /** 统计页括号里那个数：跟着统计页的 年/月/季 筛选走，统计页自己不重复算区间 */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val statsUnreimbursed: StateFlow<Long> =
+        statsControl.flatMapLatest { (mode, year, unit) ->
+            val (s, e) = when (mode) {
+                RangeMode.MONTH -> monthRange(year, unit)
+                RangeMode.QUARTER -> quarterRange(year, unit)
+                RangeMode.YEAR -> yearRange(year)
+            }
+            ledger.observeUnreimbursedCents(s, e, emptyList())
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
     fun setStatsMode(mode: RangeMode) {
         statsMode.value = mode
@@ -618,7 +707,9 @@ class LedgerViewModel @Inject constructor(
         dateMillis: Long,
         note: String,
         reimbursed: Boolean = false,
-        accountId: Long = AccountEntity.UNSPECIFIED_ID
+        accountId: Long = AccountEntity.UNSPECIFIED_ID,
+        /** 记一笔里勾的「报销」开关 = 进报销池待报销。详见 [addTransaction] 上方说明 */
+        isReimburse: Boolean = false
     ) {
         val amount = parseAmountToCents(amountYuan)
         if (amount == null || amount <= 0) {
@@ -633,7 +724,14 @@ class LedgerViewModel @Inject constructor(
                     categoryId = categoryId,
                     dateMillis = dateMillis,
                     note = note.trim(),
-                    reimbursed = reimbursed,
+                    // 记一笔勾的「报销」开关 = **进报销池待报销**，状态必须是未报销。
+                    // 两个字段的分工：isReimburse 管「属不属于报销池」（池子按它查），
+                    // reimbursed 管「已经报完了」（两个 tab 按它分）。
+                    // 记一笔是「还没报」，所以 reimbursed 一律写 false ——
+                    // 写成 true 的话这笔一进来就落到「已报销」tab，还没报就没了。
+                    // 之前这里传的是界面那个开关的 true，等于把没报的账单标记成已报。
+                    reimbursed = false,
+                    isReimburse = isReimburse,
                     accountId = accountId
                 )
             )
@@ -644,11 +742,56 @@ class LedgerViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 删一条账单。删的是**冲销行**时（报销页「已报销」tab 里那些负数），
+     * 顺手把原账单的已报销标记退掉 —— 只删冲销行会让原账单永远卡在「已报销」，
+     * 但支出没被冲回来，统计金额凭空少一块。
+     */
     fun deleteTransaction(id: Long) {
         viewModelScope.launch {
-            ledger.deleteTransaction(id)
+            ledger.deleteTransactionCascadeOffset(id)
             refreshWidgets()
             showToast("已删除")
+        }
+    }
+
+    /**
+     * 右滑「报销」：把这笔标成已报销，**同时新增一条当天的负支出账单**。
+     *
+     * ⚠️ 为什么真写一条负支出，而不是只打个标记（2026-10-11 用户明确选的方案）：
+     * 只标记的话，统计里那笔钱永远算成「花掉了」，而钱其实公司已经赔了，
+     * 月度支出和结余都会偏大。写一条金额为负、分类相同、日期为**今天**的支出，
+     * 相当于在账上「冲销」掉这笔开销 —— 支出总额自动扣减，结余自然回来，
+     * 以后也能在账单列表里查到这笔冲销，符合记账的可追溯性要求。
+     *
+     * 两步必须原子：先标记再插入，或者反过来都可能留下
+     * 「标记了已报销但没有冲销记录」（金额凭空少）或反之（凭空多）。
+     * 所以放在 @Transaction 里做，失败一起回滚。
+     *
+     * 报销金额与原支出相同（用户确认不支持部分报销），所以冲销金额 = -原金额。
+     */
+    fun reimburseTx(tx: TxWithCategory) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            ledger.reimburseWithOffset(tx, now)
+            refreshWidgets()
+            showToast("已报销 ${formatCents(tx.amountCents)}")
+        }
+    }
+
+    /**
+     * 撤销报销：删掉那条冲销账单，原账单退回未报销。
+     *
+     * 为什么必须一起做：只删冲销记录会把原账单永远留在「已报销」tab，
+     * 但账上那笔开销没冲回来，对不上；只改标记不动账单则反过来。
+     * 冲销记录靠 note 前缀认（见 [REIMBURSE_OFFSET_MARK]），所以只影响本 App 造的冲销，
+     * 用户自己手记的负数支出不会被误删。
+     */
+    fun unreimburseTx(tx: TxWithCategory) {
+        viewModelScope.launch {
+            ledger.unreimburseAndDropOffset(tx)
+            refreshWidgets()
+            showToast("已撤销报销")
         }
     }
 
@@ -662,6 +805,8 @@ class LedgerViewModel @Inject constructor(
         note: String,
         reimbursed: Boolean = false,
         accountId: Long = AccountEntity.UNSPECIFIED_ID,
+        /** 记一笔里勾的「报销」开关 = 进报销池待报销。同 [addTransaction] */
+        isReimburse: Boolean = false,
         /**
          * 转账的转入方。非转账一律 0。
          * 之前这个参数根本不存在，所以**把类型改成转账走 update 路径时转入方必丢**。
@@ -686,7 +831,17 @@ class LedgerViewModel @Inject constructor(
                     dateMillis = dateMillis,
                     note = note.trim(),
                     createdAt = old?.createdAt ?: System.currentTimeMillis(),
-                    reimbursed = reimbursed,
+                    // isReimburse 跟着开关走（用户可以拿它移出/放回报销池）；
+                    // reimbursed **沿用原值**，不能被界面那个开关覆盖 ——
+                    // 开关读的是 isReimburse，对已报完的账单也是 true。
+                    // 要是跟着它写 true，等于「编辑一下这笔就从已报销变已报销」，
+                    // 写 false 更糟：已经报完的账单被编辑一次就退回未报销。
+                    // 只有 reimbursedDate 一起带回，撤销报销才有依据。
+                    reimbursed = old?.reimbursed ?: false,
+                    isReimburse = isReimburse,
+                    // 报销日期也带回：编辑一笔已报销的账单不该把报销日期清零，
+                    // 否则「已报销」tab 里点撤销时会找不到对应的冲销行
+                    reimburseDateMillis = old?.reimburseDateMillis ?: 0L,
                     accountId = accountId,
                     // 从转账改成支出时要把 toAccountId 清零，否则这条账单
                     // 还留着旧转入方的指向，转账页会渲染出一条幽灵转账
@@ -695,6 +850,12 @@ class LedgerViewModel @Inject constructor(
                     } else 0L
                 )
             )
+            // 改已报销账单的金额 / 分类 / 日期时，配对的冲销行必须跟着改。
+            // 不跟的话冲销行还挂着旧的 -金额、旧的日期、旧的分类，
+            // 两笔对不上，撤销报销时也会找出个半对的记录。
+            if (old?.reimbursed == true && originIdFromNote(old.note) == null) {
+                ledger.syncOffsetOf(id, amount, categoryId, dateMillis)
+            }
             refreshWidgets()
             showToast("已保存")
         }
@@ -1148,10 +1309,18 @@ class LedgerViewModel @Inject constructor(
                 }
                 // 转账要往账单表里插，但分类 id 是 0，绕开 importPlan 那套
                 // （它按分类名反查 id，转账没分类）
+                //
+                // ⚠️ `from == to` 必须跳过，和上面 [importCsv] 一致。
+                // 钱迹的「转出 / 转入」有一边是空的，QianJiImporter 会把空的那边
+                // 补成另一边（`from.ifBlank { to }`），于是「支付宝 → 支付宝」
+                // 这种自己转自己的行照样能落库。余额公式里转出减、转入加，
+                // 同一个账户两边都算一遍会互相抵消，看起来没事；
+                // 但转账列表里会多出一笔「支付宝 → 支付宝」的假记录，
+                // 而且这笔的 categoryId=0 会跟着进统计查询，污染分类聚合。
                 val transfers = parsed.transfers.mapNotNull { t ->
                     val from = ledger.findAccountByName(t.fromAccountName)
                     val to = ledger.findAccountByName(t.toAccountName)
-                    if (from == null || to == null) null
+                    if (from == null || to == null || from == to) null
                     else com.dafeng.onlymoneynote.data.local.TransactionEntity(
                         amountCents = t.cents,
                         type = com.dafeng.onlymoneynote.data.local.TxType.TRANSFER.value,

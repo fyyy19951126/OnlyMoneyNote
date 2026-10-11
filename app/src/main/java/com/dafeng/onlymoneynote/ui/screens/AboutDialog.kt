@@ -49,7 +49,12 @@ fun AboutDialog(
     checking: Boolean = false,
     /** 上一次检查的结果，直接显示在这一行里（toast 会被这个对话框盖住） */
     hint: String? = null,
-    onTapVersion: () -> Unit = {}
+    /** 有新版且 update.json 配了 apk 直链时，才给「下载并安装」那颗按钮 */
+    installLabel: String? = null,
+    /** 应用内下载进度：null = 没在下；非空时按钮显示百分比并挡住重复点击 */
+    installPercent: Int? = null,
+    onTapVersion: () -> Unit = {},
+    onInstall: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val version = remember {
@@ -92,6 +97,24 @@ fun AboutDialog(
                         fontSize = 12.sp,
                         color = AppTheme.primary,
                         modifier = Modifier.padding(start = 8.dp, top = 2.dp)
+                    )
+                }
+                // 应用内更新那颗按钮：有 apk 直链时才出现，下完直接弹系统安装页
+                if (installLabel != null) {
+                    val busyInstall = installPercent != null
+                    Text(
+                        installPercent?.let { "下载中 $it%" } ?: installLabel,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier
+                            .padding(top = 8.dp)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (busyInstall) AppTheme.primary.copy(alpha = 0.5f) else AppTheme.primary)
+                            .clickable(enabled = !busyInstall, onClick = onInstall)
+                            .padding(vertical = 9.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
                 }
                 Spacer(Modifier.height(12.dp))

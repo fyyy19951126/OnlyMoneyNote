@@ -30,7 +30,14 @@ data class ThirdPartyParse(
     val rows: List<RecordsCsvImporter.RawRow>,
     val transfers: List<QianJiImporter.Transfer>,
     val skippedCurrency: Int,
-    val skippedBad: Int
+    val skippedBad: Int,
+    /**
+     * 已被对方软件标记「报过了」的账单序号（对应 [rows] 的下标）。
+     * 大象记账是 CSV，没有这个概念，恒为空集。
+     */
+    val reimbursedIndexes: Set<Int> = emptySet(),
+    /** 实际报销日期，key 同行号。0 = 对方数据里查不到 */
+    val reimburseDates: Map<Int, Long> = emptyMap()
 )
 
 /**
@@ -45,7 +52,14 @@ object ThirdPartyImportSupport {
     fun parse(kind: ThirdPartyKind, bytes: ByteArray): ThirdPartyParse = when (kind) {
         ThirdPartyKind.QIANJI -> {
             val r = QianJiImporter.parse(bytes)
-            ThirdPartyParse(r.rows, r.transfers, r.skippedCurrency, r.skippedBad)
+            ThirdPartyParse(
+                rows = r.rows,
+                transfers = r.transfers,
+                skippedCurrency = r.skippedCurrency,
+                skippedBad = r.skippedBad,
+                reimbursedIndexes = r.reimbursedIndexes,
+                reimburseDates = r.reimburseDates
+            )
         }
         ThirdPartyKind.ELEPHANT -> {
             // CSV 那条路径本来就吃大象记账的表头；这里把结果包成同一个形状
@@ -54,7 +68,17 @@ object ThirdPartyImportSupport {
         }
     }
 
-    /** 把解析结果喂给 CSV 那套映射表，算出要建哪些分类 */
+    /**
+     * 把解析结果喂给 CSV 那套映射表，算出要建哪些分类，
+     * 并按序号把「实际报销日期」回填到对应账单上。
+     *
+     * 报销日期只能在归类**之前**靠原始行序找（对方文件里是「报销记录行关联到支出行」），
+     * 归类完那层关系就没了。所以先 buildPlanFromRows，再按 indexes 补日期。
+     */
     fun planOf(parsed: ThirdPartyParse): RecordsCsvImporter.Plan =
-        RecordsCsvImporter.buildPlanFromRows(parsed.rows)
+        RecordsCsvImporter.applyReimburseDates(
+            RecordsCsvImporter.buildPlanFromRows(parsed.rows),
+            parsed.reimbursedIndexes,
+            parsed.reimburseDates
+        )
 }

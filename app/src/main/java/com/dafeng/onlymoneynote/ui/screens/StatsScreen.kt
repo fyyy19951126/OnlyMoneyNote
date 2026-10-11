@@ -103,6 +103,7 @@ fun StatsScreen(
 ) {
     val state by vm.stats.collectAsStateCompat()
     val control by vm.statsControl.collectAsStateCompat()
+    val unreimbursed by vm.statsUnreimbursed.collectAsStateCompat()
     val accountOverviews by vm.accountOverviews.collectAsStateCompat()
     val (mode, _, _) = control
 
@@ -155,7 +156,8 @@ fun StatsScreen(
                 Spacer(Modifier.height(10.dp))
                 Text(
                     (if (balance >= 0) "+" else "-") + "¥" +
-                        LedgerViewModel.formatCents(abs(balance)) + " 结余",
+                        LedgerViewModel.formatCents(abs(balance)) + " 结余" +
+                        "（未报销额 ¥" + LedgerViewModel.formatCents(unreimbursed) + "）",
                     fontSize = 12.sp,
                     color = Color.White.copy(alpha = 0.72f)
                 )

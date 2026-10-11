@@ -37,6 +37,14 @@ object RecordsCsvImporter {
         val note: String,
         /** 「报销」列：是 / 1 / Y / true 都算选中 */
         val reimbursed: Boolean = false,
+        /**
+         * 是否属于**报销池**（2026-10-11 加，跟 [reimbursed] 区分开）。
+         *
+         * [reimbursed] = 已经报过了；本字段 = 这笔钱该不该走报销流程。
+         * 钱迹的「报销」类型行本字段 true，「支出」类型行 false。
+         * CSV 导入没有这个概念，恒为 false（只有用户在 CSV 里标了「报销」列才算）。
+         */
+        val isReimburse: Boolean = false,
         /** 「账户」列的账户名；空 = 没写，导入时归「未指定」 */
         val accountName: String = ""
     )
@@ -59,6 +67,10 @@ object RecordsCsvImporter {
         val dateMillis: Long,
         val note: String,
         val reimbursed: Boolean = false,
+        /** 是否属于报销池（2026-10-11 加，透传 [RawRow.isReimburse]） */
+        val isReimburse: Boolean = false,
+        /** 实际报销日期（毫秒），0 = 没报 */
+        val reimburseDateMillis: Long = 0L,
         val accountName: String = ""
     )
 
@@ -225,7 +237,19 @@ object RecordsCsvImporter {
             val cat = at(iCatL2).ifBlank { at(iCatSingle) }.ifBlank { at(iCatL1) }.ifBlank { "其他" }
             val reimb = at(iReimb).lowercase() in setOf("是", "1", "y", "yes", "true", "✓")
 
-            out.add(RawRow(date, cat, type, cents, at(iNote), reimb, at(iAccount)))
+            // 用具名参数：[RawRow] 中间插过字段（isReimburse），位置参数太脆
+            out.add(
+                RawRow(
+                    dateMillis = date,
+                    category = cat,
+                    type = type,
+                    cents = cents,
+                    note = at(iNote),
+                    reimbursed = reimb,
+                    isReimburse = false,
+                    accountName = at(iAccount)
+                )
+            )
         }
         return out to transfers
     }
@@ -379,7 +403,7 @@ object RecordsCsvImporter {
             }
         }
 
-        val txs = rows.map { r ->
+        val txs = rows.mapIndexed { i, r ->
             val parent = resolveParentName(r.category, r.type)
                 ?: if (r.type == 0) FALLBACK_EXPENSE_PARENT else FALLBACK_INCOME_PARENT
             Tx(
@@ -390,6 +414,9 @@ object RecordsCsvImporter {
                 dateMillis = r.dateMillis,
                 note = r.note,
                 reimbursed = r.reimbursed,
+                isReimburse = r.isReimburse,
+                // 报销日期靠序号回填（第三方导入才知道哪几笔报过了），见 buildPlanWithReimburse
+                reimburseDateMillis = 0L,
                 accountName = r.accountName
             )
         }
@@ -405,5 +432,29 @@ object RecordsCsvImporter {
             }
         }
         return Plan(fixed, txs)
+    }
+
+    /**
+     * 按**序号**回填实际报销日期。
+     *
+     * 钱迹那种「报销记录行关联到原支出行」的语义，只有在原始行序里才表达得出来，
+     * 归类成 [Tx] 之后就丢了。所以第三方导入流程是：
+     * [buildPlanFromRows] 先原样归类，再拿 [ThirdPartyResult.reimbursedIndexes]
+     * 里那些序号把日期补上去。
+     *
+     * 只改日期不动别的字段，也**不会**改变 txs 的顺序和长度（用 mapIndexed + copy），
+     * 所以调用方拿到的下标还能继续用。
+     */
+    fun applyReimburseDates(
+        plan: Plan,
+        indexes: Set<Int>,
+        dates: Map<Int, Long>
+    ): Plan {
+        if (indexes.isEmpty()) return plan
+        val patched = plan.txs.mapIndexed { i, tx ->
+            if (i !in indexes) tx
+            else tx.copy(reimburseDateMillis = dates[i] ?: 0L)
+        }
+        return Plan(plan.parents, patched)
     }
 }

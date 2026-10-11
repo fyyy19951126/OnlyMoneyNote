@@ -292,8 +292,12 @@ private fun AddTransactionForm(
         mutableStateOf(editing?.let { LedgerViewModel.formatCents(it.amountCents) } ?: "")
     }
     var note by remember { mutableStateOf(editing?.note ?: "") }
-    // 是否报销：选中后这笔会进首页「报销」统计
-    var reimbursed by remember { mutableStateOf(editing?.reimbursed ?: false) }
+    // 「报销」开关 = 这笔要进报销池、等着报销。
+    // ⚠️ 初值读的是 [TxWithCategory.isReimburse]（「属不属于报销池」），不是 reimbursed
+    // （「已经报过了」）。之前读成 reimbursed 造成两个 bug：
+    // ① 编辑一笔待报销账单，开关显示未勾 —— 用户以为这功能坏了
+    // ② 保存后 isReimburse 不落库，这笔从报销池消失，再也回不去
+    var reimbursed by remember { mutableStateOf(editing?.isReimburse ?: false) }
     // 当前选中的分类（二级优先）
     var categoryId by remember { mutableLongStateOf(editing?.categoryId ?: 0L) }
     // 这笔钱走哪个账户。新建先占「未指定」，等 lastUsed 到位再换成上次用的
@@ -461,14 +465,18 @@ private fun AddTransactionForm(
                 categoryId = categoryId,
                 dateMillis = dateMillis,
                 note = note,
+                // 报销开关要同时喂给 isReimburse（进池）和 reimbursed（已报销）。
+                // 只传 reimbursed 的话这笔不进报销池，报销页看不到。
                 reimbursed = reimbursed,
-                accountId = accountId
+                accountId = accountId,
+                isReimburse = reimbursed
             )
         } else {
             // 新建：用界面上选的时间（默认就是打开时的「现在」）
             vm.addTransaction(
                 finalAmount, TxType.from(type), categoryId,
-                dateMillis, note, reimbursed, accountId
+                dateMillis, note, reimbursed, accountId,
+                isReimburse = reimbursed
             )
         }
         if (keepOpen && !isEdit) {
@@ -1946,13 +1954,25 @@ private fun AccountPickerChip(
 ) {
     var open by remember { mutableStateOf(false) }
     val density = LocalDensity.current
-    // 面板宽度 = 1/3 屏。账户名一般 2~4 字，1/3 屏放得下还留点呼吸位。
+    // 面板宽度。2026-10-11 用户反馈「账户名被遮挡」——
+    // 原来固定 1/3 屏，扣掉图标 26dp + 间距 8dp + 两侧 padding 20dp 之后，
+    // 留给文字的只有 100dp 出头，14sp 的中文一行最多 6~7 个字，
+    // 「招商银行储蓄卡」这种直接被 Ellipsis 截掉，看起来就像缺字。
+    //
+    // 改成 **46% 屏宽**，同时给一个下限：屏窄的时候不至于窄到只剩两个半字。
+    // 文字仍保留 maxLines=1 + Ellipsis 兜底，超长名字不至于把面板撑变形。
     val panelWidth = with(density) {
-        (LocalConfiguration.current.screenWidthDp / 3f).dp
+        val screenW = LocalConfiguration.current.screenWidthDp.dp
+        (screenW * 0.46f).coerceAtLeast(148.dp)
     }
     // 面板定位：以**胶囊**为锚点，右边缘贴在胶囊左边缘再往左一个 gap，
     // 底边跟胶囊底边对齐 —— 视觉上就是「从胶囊左边长出来的」。
-    val popupProvider = remember(density) {
+    //
+    // ⚠️ 面板加宽后，`anchorBounds.left - width - gap` 可能算成负数，
+    // 整个面板就被推到屏幕外、只露出一条边（看着像「什么都没有」）。
+    // 所以左右都要 clamp 进屏幕内：左侧不越界，右侧也不越界，
+    // 屏幕真的不够宽时优先保证左边有内容。
+    val popupProvider = remember(density, panelWidth) {
         object : androidx.compose.ui.window.PopupPositionProvider {
             override fun calculatePosition(
                 anchorBounds: IntRect,
@@ -1961,8 +1981,15 @@ private fun AccountPickerChip(
                 popupContentSize: IntSize
             ): IntOffset {
                 val gap = with(density) { 8.dp.roundToPx() }
-                val x = anchorBounds.left - popupContentSize.width - gap
-                val y = anchorBounds.bottom - popupContentSize.height
+                val margin = with(density) { 8.dp.roundToPx() }
+                val maxX = (windowSize.width - popupContentSize.width - margin)
+                    .coerceAtLeast(margin)
+                val x = (anchorBounds.left - popupContentSize.width - gap)
+                    .coerceIn(margin, maxX)
+                // 底边对齐胶囊底边；顶部超出屏幕就顶格
+                val minY = with(density) { 8.dp.roundToPx() }
+                val y = (anchorBounds.bottom - popupContentSize.height)
+                    .coerceAtLeast(minY)
                 return IntOffset(x, y)
             }
         }

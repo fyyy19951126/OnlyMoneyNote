@@ -185,6 +185,8 @@ private fun AppRoot(
     val accounts by vm.accounts.collectAsState()
     val autoBackupOn by vm.autoBackupOn.collectAsState()
     val updateHint by vm.updateHint.collectAsState()
+    val pendingUpdate by vm.pendingUpdate.collectAsState()
+    val apkPercent by vm.apkPercent.collectAsState()
 
     // 提示条：显示 1.8 秒自动消失。
     // 用 LaunchedEffect(toast) 做延时 —— toast 变了协程就重启，不会误清下一条。
@@ -348,6 +350,9 @@ private fun AppRoot(
                     transactions = reimbursedTxs,
                     onEdit = { editor = EditorTarget.Edit(it) },
                     onDelete = vm::deleteTransaction,
+                    // 右滑：未报销 tab 报掉，已报销 tab 撤销（各自写/删一条冲销账单）
+                    onReimburse = vm::reimburseTx,
+                    onUnreimburse = vm::unreimburseTx,
                     onBack = { stack = stack.dropLast(1) }
                 )
 
@@ -391,9 +396,15 @@ private fun AppRoot(
             // 关于：仍是弹层（用户只要求把分类管理 / 备份 / 导入导出 / 账户改成整页）
             if (showAbout) {
                 AboutDialog(
-                    onDismiss = { showAbout = false },
+                    onDismiss = { showAbout = false; vm.clearUpdateHint() },
                     checking = busy,
                     hint = updateHint,
+                    // 用户要求（2026-10-11）：能拿到 apk 直链就在 App 里直接下载安装，
+                    // 拿不到（apkUrl 空）时按钮不出现，仍然走蓝奏云
+                    installLabel = pendingUpdate?.takeIf { it.apkUrl.isNotBlank() }
+                        ?.let { "下载并安装 ${it.versionName}" },
+                    installPercent = apkPercent,
+                    onInstall = { vm.downloadAndInstallUpdate() },
                     // 2026-10-09 用户要求：平时不联网；点这一行才查，有新版直接跳浏览器下载页
                     onTapVersion = { vm.checkUpdateNow() }
                 )

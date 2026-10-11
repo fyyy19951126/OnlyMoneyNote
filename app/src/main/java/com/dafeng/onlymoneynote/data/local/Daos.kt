@@ -7,6 +7,10 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.dafeng.onlymoneynote.data.importer.RecordsCsvImporter
+// 冲销行 note 前缀，跟 LedgerRepository.reimburseWithOffset 用的是同一个常量，
+// 保证「导入生成的冲销」和「手动报销生成的冲销」撤销时都能被同一个前缀命中
+import com.dafeng.onlymoneynote.data.repo.OFFSET_MARK
+import com.dafeng.onlymoneynote.data.repo.offsetNote
 import kotlinx.coroutines.flow.Flow
 
 data class TxWithCategory(
@@ -19,7 +23,17 @@ data class TxWithCategory(
     val iconKey: String,
     val dateMillis: Long,
     val note: String,
+    /** 是否**已经报过销**。报销页两个 tab 就是按它 + [isReimburse] 分的 */
     val reimbursed: Boolean,
+    /**
+     * 是否属于**报销池**。false = 普通账单，跟报销无关，不出现在报销页。
+     *
+     * 跟 [reimbursed] 分开是因为「该报」和「报过了」是两件事：
+     * 报销池里既有没报的也有报完的，光一个布尔分不出两个 tab。
+     */
+    val isReimburse: Boolean = false,
+    /** 实际报销日期（毫秒）。0 = 还没报。已报销的行用它显示「哪天报的」 */
+    val reimburseDateMillis: Long = 0L,
     /** 图标块配色 key：优先取一级分类的自定义色；空 = 按一级图标的分组色 */
     val colorKey: String = "",
     /** 一级分类的图标 key（本身是一级分类时就是自己的），用来兜底算分组色 */
@@ -99,8 +113,24 @@ interface TransactionDao {
     @Query("DELETE FROM `transaction` WHERE id = :id")
     suspend fun deleteById(id: Long)
 
+    /**
+     * 按 note 前缀删账单。撤销报销时用它删掉那条「报销冲销#<原id>」的负支出。
+     *
+     * 用前缀而不是「金额为负 + 分类相同」这种条件去猜：
+     * 用户完全可能自己手记一笔负支出，猜条件会把它一起删掉。
+     */
+    @Query("DELETE FROM `transaction` WHERE note LIKE :prefix || '%'")
+    suspend fun deleteByNotePrefix(prefix: String)
+
     @Query("SELECT * FROM `transaction` ORDER BY dateMillis DESC, id DESC")
     suspend fun getAllOnce(): List<TransactionEntity>
+
+    @Query("SELECT * FROM `transaction` WHERE id = :id")
+    suspend fun getById(id: Long): TransactionEntity?
+
+    /** 按 note 前缀找一条（冲销行用它精确定位）。原单可能有多个前缀命中，取最新一条。 */
+    @Query("SELECT * FROM `transaction` WHERE note LIKE :prefix || '%' ORDER BY id DESC LIMIT 1")
+    suspend fun getByNotePrefix(prefix: String): TransactionEntity?
 
     @Query("DELETE FROM `transaction`")
     suspend fun clearAll()
@@ -114,8 +144,9 @@ interface TransactionDao {
     @Query("SELECT * FROM account")
     suspend fun getAllAccountsOnce(): List<AccountEntity>
 
+    /** 返回自增出来的 id 列表，顺序跟传进去的 list 一致。导入时要靠它给冲销行拼 note。 */
     @Insert
-    suspend fun insertTransactions(list: List<TransactionEntity>)
+    suspend fun insertTransactions(list: List<TransactionEntity>): List<Long>
 
     /**
      * 导入账单：清掉旧账单、写入文件里的账单，**分类只补缺、不覆盖**。
@@ -170,13 +201,49 @@ interface TransactionDao {
                 dateMillis = t.dateMillis,
                 note = t.note,
                 reimbursed = t.reimbursed,
+                // 报销池标记 + 实际报销日期一起带上，否则导入完报销页是空的
+                isReimburse = t.isReimburse,
+                reimburseDateMillis = t.reimburseDateMillis,
                 // 账户按名字认，认不出来归「未指定」：导入不该顺手造出一堆同名账户
                 accountId = t.accountName.trim()
                     .let { name -> accounts.firstOrNull { it.name == name }?.id }
                     ?: AccountEntity.UNSPECIFIED_ID
             )
         }
-        insertTransactions(rows)
+        val ids = insertTransactions(rows)
+
+        // 已报销的每一笔，配一条**负支出冲销行**，跟手动右滑报销写进去的完全同格式。
+        // 不配的话这 1492 笔公司报销的钱还在总支出里全额计入，统计金额偏大；
+        // 在统计层扣减虽然也能对上数，但明细里看不到冲销行，账实不一致，以后对账更难。
+        //
+        // 冲销行：
+        //   金额 = -原金额，类型 = 支出（TxType.EXPENSE.value = 0）
+        //   分类 / 账户跟原账单一致（钱是同一笔钱）
+        //   日期 = **原消费日期**，跟原始行一样。两行并排出现在首页才看得出是同一笔；
+        //     若用报销日期，隔几个月报销的话这笔支出会从消费月凭空消失，
+        //     那个月的账单对不上实际花销。
+        //   note = OFFSET_MARK#<原id>（报销于 yyyy-MM-dd）
+        //     前缀给「撤销报销」精确定位用；后面的日期给人看 ——
+        //     冲销日期是这张单据上的关键信息，不写下来就没法核对。
+        //   reimbursed = true、isReimburse = true —— 冲销行留在报销池里，
+        //     报销页「已报销」tab 展示的就是这些负支出行。
+        val offsets = rows.mapIndexedNotNull { i, t ->
+            if (!t.reimbursed) return@mapIndexedNotNull null
+            val originId = ids.getOrNull(i) ?: return@mapIndexedNotNull null
+            TransactionEntity(
+                amountCents = -t.amountCents,
+                type = 0,
+                categoryId = t.categoryId,
+                dateMillis = t.dateMillis,
+                note = offsetNote(originId, t.reimburseDateMillis),
+                reimbursed = true,
+                isReimburse = true,
+                reimburseDateMillis = t.reimburseDateMillis,
+                accountId = t.accountId,
+                toAccountId = 0L
+            )
+        }
+        if (offsets.isNotEmpty()) insertTransactions(offsets)
         return created
     }
 
@@ -191,6 +258,8 @@ interface TransactionDao {
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
+               t.isReimburse AS isReimburse,
+               t.reimburseDateMillis AS reimburseDateMillis,
                t.createdAt AS createdAt,
                t.accountId AS accountId,
                COALESCE(a.name, '未指定') AS accountName,
@@ -271,6 +340,8 @@ interface TransactionDao {
                'more_horiz' AS iconKey,
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
+               t.isReimburse AS isReimburse,
+               t.reimburseDateMillis AS reimburseDateMillis,
                t.accountId AS accountId,
                COALESCE(a.name, '未指定') AS accountName,
                COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
@@ -300,6 +371,8 @@ interface TransactionDao {
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
+               t.isReimburse AS isReimburse,
+               t.reimburseDateMillis AS reimburseDateMillis,
                t.createdAt AS createdAt,
                t.accountId AS accountId,
                COALESCE(a.name, '未指定') AS accountName,
@@ -319,6 +392,48 @@ interface TransactionDao {
         """
     )
     fun observeRangeWithCategory(startMillis: Long, endMillis: Long): Flow<List<TxWithCategory>>
+
+    /**
+     * 最近 [limit] 笔账单（带分类名），给桌面插件用。
+     *
+     * ⚠️ 插件要的是「最近 5 笔」，但以前这里写的是 `observeAll().first().take(5)` ——
+     * **把整张账单表连 4 个 LEFT JOIN 全部反序列化进内存，才丢掉 99%**。
+     * 从钱迹导入几千笔之后，四个插件各跑一次这个查询，就是四份全表对象同时挂在内存里，
+     * 后台协程一撞就 OutOfMemory，表现为「导入完过一会儿闪退」。
+     * 这里在 SQL 层就 LIMIT 住，返回的只有 5 行。
+     */
+    @Query(
+        """
+        SELECT t.id AS id, t.amountCents AS amountCents, t.type AS type,
+               t.categoryId AS categoryId,
+               COALESCE(c.name, '未分类') AS categoryName,
+               p.name AS parentName,
+               COALESCE(c.iconKey, 'more_horiz') AS iconKey,
+               COALESCE(p.colorKey, c.colorKey, '') AS colorKey,
+               COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
+               t.dateMillis AS dateMillis, t.note AS note,
+               t.reimbursed AS reimbursed,
+               t.isReimburse AS isReimburse,
+               t.reimburseDateMillis AS reimburseDateMillis,
+               t.createdAt AS createdAt,
+               t.accountId AS accountId,
+               COALESCE(a.name, '未指定') AS accountName,
+               COALESCE(a.iconKey, 'emoji:💳') AS accountIconKey,
+               COALESCE(a.colorKey, '') AS accountColorKey,
+               t.toAccountId AS toAccountId,
+               COALESCE(a2.name, '') AS toAccountName,
+               COALESCE(a2.iconKey, '') AS toAccountIconKey,
+               COALESCE(a2.colorKey, '') AS toAccountColorKey
+        FROM `transaction` t
+        LEFT JOIN category c ON c.id = t.categoryId
+        LEFT JOIN category p ON p.id = c.parentId
+        LEFT JOIN account a ON a.id = t.accountId
+        LEFT JOIN account a2 ON a2.id = t.toAccountId
+        ORDER BY t.dateMillis DESC, t.id DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun recentWithCategory(limit: Int): List<TxWithCategory>
 
     /** 某个分类（含其子分类）名下的账单数。删分类前先查，避免产生孤儿账单。 */
     @Query(
@@ -340,7 +455,7 @@ interface TransactionDao {
     @Query("SELECT MIN(dateMillis) AS minAt, MAX(dateMillis) AS maxAt FROM `transaction`")
     fun observeDateBounds(): Flow<DateBounds>
 
-    /** 全部报销账单，带分类名。首页「报销」入口点进来就看这个。 */
+    /** 报销池里的全部账单（不管报没报过）。报销页两个 tab 都从这里切。 */
     @Query(
         """
         SELECT t.id AS id, t.amountCents AS amountCents, t.type AS type,
@@ -352,6 +467,8 @@ interface TransactionDao {
                COALESCE(p.iconKey, c.iconKey, 'more_horiz') AS parentIconKey,
                t.dateMillis AS dateMillis, t.note AS note,
                t.reimbursed AS reimbursed,
+               t.isReimburse AS isReimburse,
+               t.reimburseDateMillis AS reimburseDateMillis,
                t.createdAt AS createdAt,
                t.accountId AS accountId,
                COALESCE(a.name, '未指定') AS accountName,
@@ -366,11 +483,44 @@ interface TransactionDao {
         LEFT JOIN category p ON p.id = c.parentId
         LEFT JOIN account a ON a.id = t.accountId
         LEFT JOIN account a2 ON a2.id = t.toAccountId
-        WHERE t.reimbursed = 1
+        WHERE t.isReimburse = 1
         ORDER BY t.dateMillis DESC, t.id DESC
         """
     )
-    fun observeReimbursed(): Flow<List<TxWithCategory>>
+    fun observeReimbursePool(): Flow<List<TxWithCategory>>
+
+    /**
+     * 统计页结余后面括号里的「未报销额」：**按当前筛选范围**算，
+     * 所以日期区间 / 分类筛选都作为参数传进来，跟着页面联动。
+     *
+     * 口径：报销池里 `reimbursed = 0`（还没报）的**支出**金额合计。
+     * 只算支出 —— 报销要收回的是花出去的钱，收入类型不参与。
+     *
+     * 传 null 表示不限（首页看全部）。SQL 里用 `(:from IS NULL OR dateMillis >= :from)`。
+     */
+    @Query(
+        """
+        SELECT COALESCE(SUM(amountCents), 0) FROM `transaction`
+        WHERE isReimburse = 1 AND reimbursed = 0 AND type = 0
+          AND (:from IS NULL OR dateMillis >= :from)
+          AND (:to IS NULL OR dateMillis <= :to)
+          AND (:catsEmpty = 1 OR categoryId IN (:cats))
+        """
+    )
+    fun observeUnreimbursedCents(
+        from: Long?,
+        to: Long?,
+        catsEmpty: Int,
+        cats: List<Long>
+    ): Flow<Long>
+
+    /** 标记一笔为已报销（记下实际报销日期）。右滑报销时调。 */
+    @Query("UPDATE `transaction` SET reimbursed = 1, reimburseDateMillis = :at WHERE id = :id")
+    suspend fun markReimbursed(id: Long, at: Long)
+
+    /** 把一笔退回未报销（撤销报销）。删掉冲销记录后要调，否则状态和账单对不上。 */
+    @Query("UPDATE `transaction` SET reimbursed = 0, reimburseDateMillis = 0 WHERE id = :id")
+    suspend fun unmarkReimbursed(id: Long)
 
     /** 报销汇总：按收支类型分组。首页那块「报销」数字就是它。 */
     @Query(
@@ -379,7 +529,7 @@ interface TransactionDao {
                COALESCE(SUM(amountCents), 0) AS totalCents,
                COUNT(*) AS count
         FROM `transaction`
-        WHERE reimbursed = 1
+        WHERE isReimburse = 1
         GROUP BY type
         """
     )

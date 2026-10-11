@@ -1,5 +1,6 @@
 {
-  "versionName": "1.2.0",
+  "versionName": "1.2.1",
   "url": "https://wwazc.lanzoum.com/b0fqq8nze",
-  "note": "修掉 1.1 的几个严重问题；新增从钱迹等记账软件导入账单、每天首次打开自动备份、批量改分类；适配底部导航栏。下载页在蓝奏云，访问密码：41dv"
+  "apkUrl": "https://gitee.com/fyyy19951126/only-money-note-apk/releases/download/v1.2.1/OnlyMoneyNote-1.2.1.apk",
+  "note": "报销页重做：待报销 / 已报销分开列，右滑一笔就标记已报销并记下日期；从钱迹等软件导入的兼容性增强；检查更新现在能直接在 App 里下载安装（蓝奏云手动下载仍然保留，密码 41dv）。"
 }

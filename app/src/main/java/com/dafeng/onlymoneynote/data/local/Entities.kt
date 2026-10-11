@@ -88,6 +88,7 @@ data class AccountEntity(
         Index("categoryId"),
         Index("dateMillis"),
         Index("reimbursed"),
+        Index("isReimburse"),
         Index("accountId"),
         Index("toAccountId")
     ]
@@ -103,8 +104,35 @@ data class TransactionEntity(
     val dateMillis: Long,
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
-    /** 是否是报销相关的账单。首页「报销」入口只统计、只列出这一类。转账不参与报销 */
+    /**
+     * 是否**已经报过销**。
+     *
+     * ⚠️ 2026-10-11 语义变了。原来这个字段是「这笔跟报销有关」（报销页
+     * `WHERE reimbursed = 1` 把所有报销账单都列出来），现在改成「这笔报过了」——
+     * 因为报销页要分「已报销 / 未报销」两个 tab，光靠一个布尔不够用，
+     * 得把「属于报销池」和「已报销」拆成两件事。
+     *
+     * 现在：[isReimburse] 决定进不进报销池，本字段决定进哪个 tab。
+     * 老数据全按「isReimburse=true 且 reimbursed=false」迁移，
+     * 也就是全部退回未报销 —— 宁可多报一次，不能凭空消失。
+     */
     val reimbursed: Boolean = false,
+    /**
+     * 是否属于**报销池**（这笔钱是可以/正在走报销流程的）。
+     *
+     * 跟 [reimbursed] 的区别：报销池里有「还没报的」也有「报完的」，
+     * 报销页只列 isReimburse=true 的，再按 reimbursed 分到两个 tab。
+     *
+     * 钱迹导入时 F 列「类型」= 报销 的行就是 true。
+     */
+    val isReimburse: Boolean = false,
+    /**
+     * 实际报销日期（毫秒）。0 = 还没报。已报销的行这里有值，
+     * 用于在列表里显示「10-08 花的钱，09-27 报的」。
+     *
+     * 单独存字段而不是塞 note：note 会被用户编辑，塞进去会被覆盖掉。
+     */
+    val reimburseDateMillis: Long = 0L,
     /** 资金账户。默认「未指定」，导入老数据时不用改。转账时这是**转出方** */
     val accountId: Long = AccountEntity.UNSPECIFIED_ID,
     /**
