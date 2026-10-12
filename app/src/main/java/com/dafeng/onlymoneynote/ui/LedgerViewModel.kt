@@ -1,5 +1,8 @@
 package com.dafeng.onlymoneynote.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -305,15 +308,25 @@ class LedgerViewModel @Inject constructor(
             _busy.value = false
             // 结果写进 updateHint 显示在「关于」对话框里（toast 会被对话框盖住）
             _pendingUpdate.value = null
+            // 密码不管有没有新版都先存下来：关于页那颗「复制密码」要用
+            _lanzouPwd.value = when (r) {
+                is UpdateChecker.Result.Newer -> r.info.pwd
+                is UpdateChecker.Result.UpToDate -> r.info?.pwd ?: ""
+                else -> ""
+            }
             when (r) {
                 is UpdateChecker.Result.NotConfigured -> _updateHint.value = "还没配置更新地址"
                 is UpdateChecker.Result.UpToDate -> _updateHint.value = "已是最新版本"
                 is UpdateChecker.Result.Failed -> _updateHint.value = "连不上更新服务器"
                 is UpdateChecker.Result.Newer -> {
                     _pendingUpdate.value = r.info
+                    // 用户要求：密码不写在界面上，检测到新版就自动复制到剪贴板
+                    val copied = r.info.pwd.isNotBlank() &&
+                        copyToClipboard(r.info.pwd, "蓝奏云访问密码")
                     if (r.info.apkUrl.isBlank()) {
                         // 没配直链：保持老行为，直接开下载页（蓝奏云）
-                        _updateHint.value = "发现新版本 ${r.info.versionName}，正在打开下载页"
+                        _updateHint.value = "发现新版本 ${r.info.versionName}，正在打开下载页" +
+                            if (copied) "（密码已复制）" else ""
                         runCatching {
                             appContext.startActivity(
                                 Intent(Intent.ACTION_VIEW, Uri.parse(r.info.url))
@@ -321,7 +334,8 @@ class LedgerViewModel @Inject constructor(
                             )
                         }.onFailure { _updateHint.value = "打不开下载页" }
                     } else {
-                        _updateHint.value = "发现新版本 ${r.info.versionName}"
+                        _updateHint.value = "发现新版本 ${r.info.versionName}" +
+                            if (copied) "，蓝奏云密码已复制" else ""
                     }
                 }
             }
@@ -349,6 +363,29 @@ class LedgerViewModel @Inject constructor(
     /** 检查到的新版本。apkUrl 非空时，「关于」里给一个「下载并安装」按钮 */
     private val _pendingUpdate = MutableStateFlow<UpdateChecker.UpdateInfo?>(null)
     val pendingUpdate: StateFlow<UpdateChecker.UpdateInfo?> = _pendingUpdate.asStateFlow()
+
+    /**
+     * 蓝奏云目录的访问密码，从 update.json 的 pwd 字段来。
+     * 2026-10-11 用户要求：**界面上不显示**，检测到新版时自动复制进剪贴板。
+     * 所以密码只在点过一次版本号之后才存在（没检查过就是空，关于页那颗按钮也不出现）。
+     */
+    private val _lanzouPwd = MutableStateFlow("")
+    val lanzouPwd: StateFlow<String> = _lanzouPwd.asStateFlow()
+
+    /** 把文本写进剪贴板；系统拒绝时返回 false，不能崩 */
+    private fun copyToClipboard(text: String, label: String): Boolean = runCatching {
+        val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText(label, text))
+        true
+    }.getOrDefault(false)
+
+    /** 关于页「复制密码」那颗按钮 */
+    fun copyLanzouPwd() {
+        val p = _lanzouPwd.value
+        if (p.isNotBlank() && copyToClipboard(p, "蓝奏云访问密码")) {
+            _updateHint.value = "密码已复制到剪贴板"
+        }
+    }
 
     /** 应用内下载进度：null = 当前没在下 */
     private val _apkPercent = MutableStateFlow<Int?>(null)

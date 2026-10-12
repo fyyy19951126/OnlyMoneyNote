@@ -65,7 +65,11 @@ class BackupRepository @Inject constructor(
             transactions = transactions.map {
                 BackupTransaction(
                     it.id, it.amountCents, it.type, it.categoryId, it.dateMillis,
-                    it.note, it.createdAt, it.reimbursed, it.accountId, it.toAccountId
+                    it.note, it.createdAt, it.reimbursed, it.accountId, it.toAccountId,
+                    // v6：报销池归属 + 实际报销日期。
+                    // 这两个字段漏了的话，备份往返一次所有报销账单就从报销页消失
+                    // （池子按 isReimburse 查），已报销日期也清零。
+                    it.isReimburse, it.reimburseDateMillis
                 )
             }
         )
@@ -168,6 +172,11 @@ class BackupRepository @Inject constructor(
                 } else {
                     0L
                 }
+            // v6 起才带 isReimburse / reimburseDateMillis。老备份（v5 及更早）里
+            // reimbursed=true 的账单拿不到池子归属，恢复后会从报销页整个消失，
+            // 连「撤销报销」都点不着 —— 只能去首页手动再报一次。
+            // 所以在这里补一刀：报过 = 一定在池子里。
+            val pool = t.isReimburse || t.reimbursed
             ledger.addTransaction(
                 TransactionEntity(
                     id = t.id,
@@ -178,6 +187,10 @@ class BackupRepository @Inject constructor(
                     note = t.note,
                     createdAt = t.createdAt,
                     reimbursed = t.reimbursed,
+                    isReimburse = pool,
+                    // 报销日期拿不到就退回 0，**不能拿消费日期假装是报销日期** ——
+                    // 那个日期会显示成「报销于 <消费那天>」，是假信息，比空着更糟。
+                    reimburseDateMillis = t.reimburseDateMillis,
                     // 备份里指向一个已经不存在的账户时兜底归「未指定」，不留野指针
                     accountId = resolvedAccount,
                     toAccountId = resolvedToAccount

@@ -132,7 +132,7 @@ fun TransactionListScreen(
     categoriesForPick: List<CategoryEntity>
 ) {
     var openedId by remember { mutableStateOf<Long?>(null) }
-    // 改分类的确认流程：null = 没开；1 = 第一步（讲后果）；2 = 第二步（最终确认）
+    // 改分类的确认弹窗：一次一步，标题里直接写清「几笔改成哪个分类」
     var catConfirmStep by remember { mutableStateOf(0) }
     var pendingCatId by remember { mutableStateOf(0L) }
     var categorySheet by remember { mutableStateOf(false) }
@@ -629,7 +629,7 @@ fun TransactionListScreen(
             )
         }
 
-        /* ---------- 改分类的两步确认 ---------- */
+        /* ---------- 改分类：一步确认 ---------- */
         if (catConfirmStep > 0) {
             val target = categoriesForPick.firstOrNull { it.id == pendingCatId }
             val targetName = target?.let { c ->
@@ -647,9 +647,7 @@ fun TransactionListScreen(
                     },
                     text = {
                         Text(
-                            "这 $count 笔账单的分类会**全部**变成「$targetName」。\n\n" +
-                                "金额、时间、备注、账户都不动，只改分类。\n" +
-                                "改错了可以再改回来，但批量操作一次就是几百笔，请确认选对了。",
+                            "只改分类，金额、日期、备注、账户都不动。",
                             fontSize = 13.5.sp,
                             lineHeight = 20.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -657,58 +655,21 @@ fun TransactionListScreen(
                     },
                     confirmButton = {
                         Text(
-                            "确定，继续",
+                            "确定",
                             color = AppTheme.primary,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier
-                                .clickable { catConfirmStep = 2 }
+                                .clickable {
+                                    onBulkRecategorize(selectedIds.toList(), pendingCatId)
+                                    catConfirmStep = 0
+                                    exitSelect()
+                                }
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
                         )
                     },
                     dismissButton = {
                         Text(
                             "取消",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.clickable { catConfirmStep = 0 }.padding(horizontal = 10.dp, vertical = 5.dp)
-                        )
-                    }
-                )
-            } else {
-                AlertDialog(
-                    onDismissRequest = { catConfirmStep = 0 },
-                    shape = RoundedCornerShape(24.dp),
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    title = {
-                        Text("最后确认", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = AppTheme.primary)
-                    },
-                    text = {
-                        Text(
-                            "再确认一次：\n\n" +
-                                "**$count 笔**账单的分类 → **$targetName**\n\n" +
-                                "点下面这个按钮才会真的执行。",
-                            fontSize = 14.sp,
-                            lineHeight = 21.sp
-                        )
-                    },
-                    confirmButton = {
-                        Text(
-                            "就是它，改",
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(AppTheme.primary)
-                                .clickable {
-                                    onBulkRecategorize(selectedIds.toList(), pendingCatId)
-                                    catConfirmStep = 0
-                                    exitSelect()
-                                }
-                                .padding(horizontal = 14.dp, vertical = 7.dp)
-                        )
-                    },
-                    dismissButton = {
-                        Text(
-                            "我点错了",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.clickable { catConfirmStep = 0 }.padding(horizontal = 10.dp, vertical = 5.dp)
                         )

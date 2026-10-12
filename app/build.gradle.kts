@@ -26,9 +26,11 @@ android {
         // 2026-10-11（1.2.1）：修导入钱迹几千笔后后台 OOM 闪退（桌面插件全表加载）、
         // 修第三方导入产生「支付宝 → 支付宝」自环转账污染统计、
         // 记一笔账户选择面板加宽（原「招商银行储蓄卡」这类名字被 Ellipsis 截掉）。
+        // 2026-10-11（1.2.2）：修「待报销」的账导出去再导回来报销标记丢失 —— CSV 的「报销」列
+        // 改成三态（空 / 待报销 / 已报销），并补上成对的「报销日期」列；JSON 备份同步带上这两个字段。
         // versionCode 必须比手机上那个大，否则装不上（同版本号系统会拒）。
-        versionCode = 4
-        versionName = "1.2.1"
+        versionCode = 5
+        versionName = "1.2.2"
         vectorDrawables { useSupportLibrary = true }
 
         // ML Kit 的中文 OCR 模型每个 ABI 一份，各 6~11MB，是包体里最大的一块。

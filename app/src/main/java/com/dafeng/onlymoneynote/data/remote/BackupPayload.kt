@@ -11,6 +11,12 @@ import kotlinx.serialization.Serializable
  * - v3：分类补上「收支类型」、设置补上主页标题
  * - v4：多了 accounts（资金账户），账单补上 accountId
  * - v5：账单补上 toAccountId（转账的转入方）
+ * - v6：账单补上 isReimburse（属不属于报销池）和 reimburseDateMillis（实际报销日期）
+ *
+ * v6 之前的老备份里，**报销信息是残的**：只有 reimbursed，没有 isReimburse。
+ * 这意味着报销池归属和报销日期在往返中会丢 —— 恢复完所有报销账单从「未报销」
+ * tab 里消失、已报销日期清零。老备份反序列化走默认值 false / 0，
+ * 拿不到的信息只能当没有，不会炸。
  *
  * 旧文件缺字段时反序列化自动用默认值，不会炸；
  * v2 及更早的备份没有分类 type，恢复时会用账单自己的收支反推（见 BackupRepository.inferTypes）。
@@ -34,7 +40,7 @@ data class BackupPayload(
          * 之前导出侧写死 `version = 4`、而这里默认值是 5、实际又带着 v5 的
          * `toAccountId`，三处对不上。现在**只有一个来源**：改版本时只动这个常量。
          */
-        const val CURRENT_VERSION = 5
+        const val CURRENT_VERSION = 6
     }
 }
 
@@ -102,5 +108,25 @@ data class BackupTransaction(
      * 注意它是**按 id 存的**，恢复时可能指向已经不存在的账户
      * （对方备份比你新、或那条账户被删了），所以恢复逻辑必须兜底归「未指定」。
      */
-    val toAccountId: Long = 0
+    val toAccountId: Long = 0,
+    /**
+     * v6 起才有。**是否属于报销池** —— 这笔该不该走报销流程。
+     *
+     * 和 [reimbursed] 是两件事，别混：
+     * - [reimbursed] = 已经报完了
+     * - 本字段 = 这笔钱属不属于报销池（记一笔时勾了「报销」开关就是 true）
+     *
+     * 报销页两个 tab 是拿 isReimburse 圈池子、拿 reimbursed 分「已/未报销」的，
+     * 所以老备份（v6 之前）恢复出来的报销账单虽然 reimbursed=true，
+     * 却因为 isReimburse=false 而根本不出现在报销页 —— 只能去首页手动再报一次。
+     */
+    val isReimburse: Boolean = false,
+    /**
+     * v6 起才有。**实际报销日期**（毫秒）。0 = 还没报或没记日期。
+     *
+     * 这不只是个展示字段：已报销账单会配一条负支出冲销行，
+     * 冲销行备注里就写着「报销于 yyyy-MM-dd」，日期丢了备注就退化成
+     * 纯「报销冲销#123」，核对单据时看不到哪天报的。
+     */
+    val reimburseDateMillis: Long = 0L
 )

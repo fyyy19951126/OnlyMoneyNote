@@ -44,14 +44,16 @@ object UpdateChecker {
         val url: String,
         /** 直接指向 .apk 文件的地址，能空着 —— 空着就走 [url] 手动下载 */
         val apkUrl: String = "",
+        /** 下载页的访问密码。界面上不显示，只在需要时复制进剪贴板 */
+        val pwd: String = "",
         val note: String = ""
     )
 
     sealed interface Result {
         /** 没配更新地址 */
         object NotConfigured : Result
-        /** 已经是最新 */
-        data class UpToDate(val current: String) : Result
+        /** 已经是最新。[info] 仍然带回来，因为下载密码在里面 */
+        data class UpToDate(val current: String, val info: UpdateInfo? = null) : Result
         /** 有新版 */
         data class Newer(val info: UpdateInfo, val current: String) : Result
         /** 检查失败（网络 / 格式） */
@@ -91,6 +93,7 @@ object UpdateChecker {
                 versionName = o.optString("versionName", ""),
                 url = o.optString("url", ""),
                 apkUrl = o.optString("apkUrl", ""),
+                pwd = o.optString("pwd", ""),
                 note = o.optString("note", "")
             )
         }.getOrElse { return@withContext Result.Failed("更新信息格式不对") }
@@ -101,7 +104,7 @@ object UpdateChecker {
         if (compareVersion(info.versionName, currentVersionName) > 0) {
             Result.Newer(info, currentVersionName)
         } else {
-            Result.UpToDate(currentVersionName)
+            Result.UpToDate(currentVersionName, info)
         }
     }
 

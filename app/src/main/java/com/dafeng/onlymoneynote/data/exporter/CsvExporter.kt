@@ -26,10 +26,12 @@ object CsvExporter {
      * 转账要同时表达「钱从哪来、到哪去」，单靠一个「账户」列装不下。
      * 收支行这三列留空，转账行「账户」列写「甲 → 乙」方便人看。
      *
-     * 导入侧（[RecordsCsvImporter]）认这三列，所以**导出的文件能原样导回来**。
+     * 「报销」和「报销日期」两列是**成对**的，缺一不可：
+     * 只有「报销」没有日期，恢复后报销日期退化成 0，备注里的「报销于 xxx」就没了；
+     * 只有日期没有标记，恢复时不知道该不该配冲销行。导入侧按表头名找，顺序变了也认。
      */
     private const val HEADER =
-        "日期,一级分类,二级分类,收支,金额,备注,报销,账户,账户→,转出账户,转入账户"
+        "日期,一级分类,二级分类,收支,金额,备注,报销,报销日期,账户,账户→,转出账户,转入账户"
     private const val BOM = "\uFEFF"
 
     private val dateFmt = ThreadLocal.withInitial {
@@ -56,7 +58,23 @@ object CsvExporter {
             ).append(',')
             sb.append(yuan(r.amountCents)).append(',')
             sb.append(esc(r.note)).append(',')
-            sb.append(if (r.reimbursed) "是" else "").append(',')
+            // 报销列写三态，跟导入侧一一对上（见 RecordsCsvImporter 的 DONE_SET/PENDING_SET）：
+            // 空 = 不在报销池 / 待报销 = 在池子没报 / 已报销 = 报完了。
+            // ⚠️ 以前只按 reimbursed 写「是」：**待报销的账导出去报销标记就没了**，
+            // 再导回来直接不进报销池。
+            sb.append(
+                when {
+                    r.reimbursed -> "已报销"
+                    r.isReimburse -> "待报销"
+                    else -> ""
+                }
+            ).append(',')
+            // 报销日期：跟「报销」列成对出现，没报销就留空
+            sb.append(
+                if (r.reimbursed && r.reimburseDateMillis > 0L) {
+                    esc(dateFmt.get()!!.format(r.reimburseDateMillis))
+                } else ""
+            ).append(',')
 
             if (r.type == TxType.TRANSFER.value) {
                 // 转账：账户列写「甲 → 乙」给人看，同时把两边拆进

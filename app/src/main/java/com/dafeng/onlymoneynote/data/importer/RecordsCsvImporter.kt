@@ -35,19 +35,46 @@ object RecordsCsvImporter {
         val type: Int,
         val cents: Long,
         val note: String,
-        /** 「报销」列：是 / 1 / Y / true 都算选中 */
+        /**
+         * 「报销」列。**三态**，不能当布尔用：
+         * - `待报销`（isReimburse=true, reimbursed=false）→ 在报销池，还没报
+         * - `已报销`（isReimburse=true, reimbursed=true）→ 报完了
+         * - 空 → 不属于报销池
+         *
+         * 所以下面这两个字段是从这一列**派生**出来的，不是各读一列。
+         */
         val reimbursed: Boolean = false,
         /**
          * 是否属于**报销池**（2026-10-11 加，跟 [reimbursed] 区分开）。
          *
          * [reimbursed] = 已经报过了；本字段 = 这笔钱该不该走报销流程。
          * 钱迹的「报销」类型行本字段 true，「支出」类型行 false。
-         * CSV 导入没有这个概念，恒为 false（只有用户在 CSV 里标了「报销」列才算）。
+         *
+         * ⚠️ 本 App 自己导出的 CSV 里两者都靠「报销」列表达（见 [CsvExporter]）。
+         * 别的软件的导出没有这个概念 —— 只认「报销」列的老表一律按**已报销**处理
+         * （以前就是这个语义，不能改），但池子归属得补上 true，
+         * 否则恢复完这笔账从报销页整个消失。
          */
         val isReimburse: Boolean = false,
+        /**
+         * 实际报销日期（毫秒）。0 = 没记日期。
+         *
+         * CSV 侧认「报销日期」列（yyyy-MM-dd / yyyy/MM/dd 都试）。
+         * 第三方软件通常没这一列，只有钱迹那种「报销记录行关联原单」的结构才有。
+         */
+        val reimburseDateMillis: Long = 0L,
         /** 「账户」列的账户名；空 = 没写，导入时归「未指定」 */
         val accountName: String = ""
     )
+
+    /** 冲销行 note 的前缀，跟 LedgerRepository.OFFSET_MARK 一致。 */
+    private const val OFFSET_MARK = "报销冲销"
+
+    /** 「报销」列 = 已报销的写法。中文 + 布尔全套，老表里都出现过。 */
+    private val DONE_SET = setOf("是", "已报销", "1", "y", "yes", "true", "✓", "已报")
+
+    /** 「报销」列 = 在池子里但还没报的写法。 */
+    private val PENDING_SET = setOf("待报销", "未报销", "报销中", "0", "false", "否")
 
     data class Child(val name: String, val iconKey: String)
 
@@ -174,6 +201,9 @@ object RecordsCsvImporter {
         val iAmount = header.indexOf("金额")
         val iNote = header.indexOf("备注")
         val iReimb = header.indexOf("报销")
+        // 「报销日期」列：本 App 自己导出时带（yyyy/MM/dd HH:mm），
+        // 别的软件没有。认不到就 reimburseDateMillis=0，不猜。
+        val iReimbDate = header.indexOf("报销日期")
         // 转账专用列：本 App 导出时把账户列写成「甲 → 乙」，这里拆回两边。
         // 其他软件的导出通常没有这两列，认不到就都归「未指定」。
         val iAccFrom = header.indexOf("转出账户")
@@ -196,8 +226,21 @@ object RecordsCsvImporter {
         val out = ArrayList<RawRow>(rows.size)
         rows.drop(1).forEach { r ->
             fun at(i: Int) = if (i >= 0 && i < r.size) r[i].trim() else ""
+
+            // 冲销行直接跳过，**必须放在金额检查之前**。
+            // 冲销行是本 App 导出时生成的负支出行，note 统一带「报销冲销」前缀。
+            // 不能原样写进去：原单标了已报销的话 importPlan 会照规则再配一条冲销行，
+            // 两边都写就变成两条冲销 —— 支出被扣两次。让 importPlan 按原单重建才对
+            // （金额绝对值一致、note 带新库里的原 id）。
+            //
+            // 顺带一提：就算这个判断放在金额检查之后、靠 `cents <= 0` 顺带丢掉，结果也一样，
+            // 但那样太隐蔽 —— 哪天金额检查的口径一变（真要放行负数行），这里就漏了。
+            if (at(iNote).startsWith(OFFSET_MARK)) return@forEach
+
             val cents = toCents(at(iAmount)) ?: return@forEach
-            if (cents <= 0) return@forEach
+            // 非正数丢：0 是脏数据，负数是别的软件的异常导出
+            //（正常退钱应该写成收入行）。冲销行已经在上面单独识别掉了。
+            if (cents <= 0L) return@forEach
             val date = toMillis(at(iDate)) ?: return@forEach
 
             // ⚠️ 「转账」必须在算 type **之前**分出去。
@@ -235,7 +278,17 @@ object RecordsCsvImporter {
                 else -> return@forEach
             }
             val cat = at(iCatL2).ifBlank { at(iCatSingle) }.ifBlank { at(iCatL1) }.ifBlank { "其他" }
-            val reimb = at(iReimb).lowercase() in setOf("是", "1", "y", "yes", "true", "✓")
+
+            // 「报销」列是**三态**，不是一个勾：
+            //   空     → 不在报销池
+            //   待报销 → 在池子里，还没报
+            //   已报销 → 报完了（老表写「是 / 1 / Y / true」等价于已报销）
+            // 以前只判成布尔 reimbursed，池子归属从没被带出来 ——
+            // 恢复后这笔账在报销页一个 tab 都不出现。
+            val reimbCell = at(iReimb).lowercase()
+            val reimbursed = reimbCell in DONE_SET
+            val isReimburse = reimbursed || reimbCell in PENDING_SET
+            val reimbDate = if (isReimburse) toMillis(at(iReimbDate)) ?: 0L else 0L
 
             // 用具名参数：[RawRow] 中间插过字段（isReimburse），位置参数太脆
             out.add(
@@ -245,8 +298,9 @@ object RecordsCsvImporter {
                     type = type,
                     cents = cents,
                     note = at(iNote),
-                    reimbursed = reimb,
-                    isReimburse = false,
+                    reimbursed = reimbursed,
+                    isReimburse = isReimburse,
+                    reimburseDateMillis = reimbDate,
                     accountName = at(iAccount)
                 )
             )
@@ -415,8 +469,9 @@ object RecordsCsvImporter {
                 note = r.note,
                 reimbursed = r.reimbursed,
                 isReimburse = r.isReimburse,
-                // 报销日期靠序号回填（第三方导入才知道哪几笔报过了），见 buildPlanWithReimburse
-                reimburseDateMillis = 0L,
+                // 报销日期：优先用行里带来的（CSV 自己导出的「报销日期」列）。
+                // 第三方导入那种「靠序号回填」的走 [applyReimburseDates] 覆盖它。
+                reimburseDateMillis = r.reimburseDateMillis,
                 accountName = r.accountName
             )
         }

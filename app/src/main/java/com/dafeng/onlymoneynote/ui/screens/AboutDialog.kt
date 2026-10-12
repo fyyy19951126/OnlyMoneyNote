@@ -53,8 +53,11 @@ fun AboutDialog(
     installLabel: String? = null,
     /** 应用内下载进度：null = 没在下；非空时按钮显示百分比并挡住重复点击 */
     installPercent: Int? = null,
+    /** 检查过一次更新才拿得到蓝奏云密码；没密码时不显示「复制密码」那颗 */
+    lanzouPwdReady: Boolean = false,
     onTapVersion: () -> Unit = {},
-    onInstall: () -> Unit = {}
+    onInstall: () -> Unit = {},
+    onCopyLanzouPwd: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val version = remember {
@@ -125,9 +128,17 @@ fun AboutDialog(
                 Spacer(Modifier.height(2.dp))
                 RepoLink("Gitee", REPO_GITEE) { openInBrowser(context, REPO_GITEE) }
                 // 用户原话（2026-10-11）：「在关于里再加一个蓝奏云，目录就放 update 刚才写入的那个，
-                // 点击跳转浏览器，并且考虑如何能提示用户密码呢？41dv」
+                // 点击跳转浏览器」；同日追加「密码不要显示在软件上，检测到更新时自动复制到粘贴板」
+                // —— 所以这一行只写名字，密码既不显示也不写死在代码里，来自 update.json 的 pwd。
                 Spacer(Modifier.height(2.dp))
-                LanzouLink { openInBrowser(context, LANZOU_URL) }
+                LanzouLink(
+                    pwdReady = lanzouPwdReady,
+                    onCopy = onCopyLanzouPwd,
+                    onOpen = {
+                        if (lanzouPwdReady) onCopyLanzouPwd()
+                        openInBrowser(context, LANZOU_URL)
+                    }
+                )
             }
         },
         confirmButton = {
@@ -183,13 +194,12 @@ private fun RepoLink(name: String, url: String, onClick: () -> Unit) {
 /**
  * 蓝奏云下载页那一行。
  *
- * 那个目录设了访问密码，光给链接用户进去还得自己知道密码，所以名字右边直接挂一个
- * **密码胶囊**：点胶囊 = 把密码复制进剪贴板（浏览器里要手动输，抄一下比记省事），
- * 点这一行其他位置 = 开浏览器。
+ * 那个目录设了访问密码，但**密码不写在界面上**（用户 2026-10-11 要求）：它来自
+ * `update.json` 的 `pwd`，检查过一次更新后才有值，这时才出现一颗「复制密码」；
+ * 点整行则是一边复制密码一边开浏览器，进去直接粘贴。
  */
 @Composable
-private fun LanzouLink(onOpen: () -> Unit) {
-    val context = LocalContext.current
+private fun LanzouLink(pwdReady: Boolean, onCopy: () -> Unit, onOpen: () -> Unit) {
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) {
         if (copied) {
@@ -207,24 +217,23 @@ private fun LanzouLink(onOpen: () -> Unit) {
     ) {
         Text("蓝奏云下载", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.weight(1f))
-        Text(
-            if (copied) "密码已复制" else "密码 $LANZOU_PWD",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            color = AppTheme.primary,
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(AppTheme.primary.copy(alpha = 0.10f))
-                .clickable {
-                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                        as android.content.ClipboardManager
-                    cm.setPrimaryClip(
-                        android.content.ClipData.newPlainText("蓝奏云访问密码", LANZOU_PWD)
-                    )
-                    copied = true
-                }
-                .padding(horizontal = 7.dp, vertical = 4.dp)
-        )
+        if (pwdReady) {
+            Text(
+                if (copied) "已复制" else "复制密码",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = AppTheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(AppTheme.primary.copy(alpha = 0.10f))
+                    .clickable {
+                        onCopy()
+                        copied = true
+                    }
+                    .padding(horizontal = 7.dp, vertical = 4.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+        }
         Spacer(Modifier.width(6.dp))
         Icon(
             Icons.AutoMirrored.Outlined.KeyboardArrowRight,
@@ -239,9 +248,8 @@ private fun LanzouLink(onOpen: () -> Unit) {
 private const val REPO_GITHUB = "https://github.com/fyyy19951126/OnlyMoneyNote"
 private const val REPO_GITEE = "https://gitee.com/fyyy19951126/only-money-note"
 
-/** 蓝奏云下载目录和它的访问密码（和 update/update.json 里那份保持一致） */
+/** 蓝奏云下载目录（访问密码不在代码里，来自 update.json 的 pwd） */
 private const val LANZOU_URL = "https://wwazc.lanzoum.com/b0fqq8nze"
-private const val LANZOU_PWD = "41dv"
 
 /** 用系统浏览器打开链接；没装浏览器也不能崩 */
 private fun openInBrowser(context: android.content.Context, url: String) {

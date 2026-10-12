@@ -186,6 +186,7 @@ private fun AppRoot(
     val autoBackupOn by vm.autoBackupOn.collectAsState()
     val updateHint by vm.updateHint.collectAsState()
     val pendingUpdate by vm.pendingUpdate.collectAsState()
+    val lanzouPwd by vm.lanzouPwd.collectAsState()
     val apkPercent by vm.apkPercent.collectAsState()
 
     // 提示条：显示 1.8 秒自动消失。
@@ -404,6 +405,8 @@ private fun AppRoot(
                     installLabel = pendingUpdate?.takeIf { it.apkUrl.isNotBlank() }
                         ?.let { "下载并安装 ${it.versionName}" },
                     installPercent = apkPercent,
+                    lanzouPwdReady = lanzouPwd.isNotBlank(),
+                    onCopyLanzouPwd = { vm.copyLanzouPwd() },
                     onInstall = { vm.downloadAndInstallUpdate() },
                     // 2026-10-09 用户要求：平时不联网；点这一行才查，有新版直接跳浏览器下载页
                     onTapVersion = { vm.checkUpdateNow() }

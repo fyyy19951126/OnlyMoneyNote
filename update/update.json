@@ -1,6 +1,7 @@
 {
-  "versionName": "1.2.1",
+  "versionName": "1.2.2",
   "url": "https://wwazc.lanzoum.com/b0fqq8nze",
-  "apkUrl": "https://gitee.com/fyyy19951126/only-money-note-apk/releases/download/v1.2.1/OnlyMoneyNote-1.2.1.apk",
-  "note": "报销页重做：待报销 / 已报销分开列，右滑一笔就标记已报销并记下日期；从钱迹等软件导入的兼容性增强；检查更新现在能直接在 App 里下载安装（蓝奏云手动下载仍然保留，密码 41dv）。"
+  "apkUrl": "https://gitee.com/fyyy19951126/only-money-note-apk/releases/download/v1.2.2/OnlyMoneyNote-1.2.2.apk",
+  "pwd": "41dv",
+  "note": "修「待报销」的账单导出去再导回来报销标记丢失：CSV 和 JSON 备份现在都带上报销状态与报销日期。检查到新版时蓝奏云密码自动复制到剪贴板，界面上不再显示密码。批量改分类合并成一个确认框，文案重写。"
 }
